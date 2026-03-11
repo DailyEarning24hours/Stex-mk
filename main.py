@@ -599,8 +599,8 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
                             
                             # 🔥 TWO BUTTONS ADDED
                             kb = [
-                                [InlineKeyboardButton("🤖 Bot Link", url=f"https://t.me/{bot_username})],
-                                [InlineKeyboardButton("👨‍💻 Developer", url=DEVELOPER_LINK")]
+                                [InlineKeyboardButton("👨‍💻 Developer", url=DEVELOPER_LINK)],
+                                [InlineKeyboardButton("🤖 Bot Link", url=f"https://t.me/{bot_username}")]
                             ]
                             try: 
                                 await context.bot.send_message(chat_id=RANGE_GROUP_ID, text=range_msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
