@@ -1,12 +1,13 @@
 """
 ==============================================================================
-PROJECT: ✨ PREMIUM OTP BOT (Ultimate Update - Version 24.0 ENTERPRISE) ✨
+PROJECT: ✨ PREMIUM OTP BOT (Ultimate Update - Version 26.0 ENTERPRISE) ✨
 CAPACITY: 10,000+ Users on Render Free Plan (O(1) Hash-Map Algorithm).
-EXTREME SPEED UPDATE: Polling interval reduced to 4 seconds.
-PARALLEL PROCESSING: Server 1 & Server 2 inboxes are now fetched SIMULTANEOUSLY!
+EXTREME SPEED UPDATE: Parallel Processing fetching in 4 seconds interval.
+FIXED: PC Clone logic removed completely. Facebook will always show as Facebook.
+FIXED: Server 1 Full Message missing issue resolved (Multi-key fallback).
+FIXED: Server 2 "Spam/Garbage HTML" issue resolved via Advanced HTML Cleaner.
 NEW FEATURE: Generates 3 Numbers. "Get Number Again" appears after all 3 are received.
-NEW FEATURE: Range & OTP forwarding now includes FULL MESSAGE + Developer & Bot Link.
-FIXED: Admin Panel (Broadcast, Backup, Ban, Inline Reply) fully restored.
+NEW FEATURE: Range & OTP forwarding includes FULL MESSAGE + Developer & Bot Link.
 ERROR HANDLING: 100% hidden HTTP 401/500 errors. Premium fallback messages used.
 FORMATTING: Fully Expanded, No Shortcuts, Maximum Stability & Beauty.
 ==============================================================================
@@ -50,8 +51,8 @@ from aiohttp import web
 
 TOKEN = "8635914509:AAHvuII5fmdBxjoXKovvxy1sPVWMHqkTpzk"
 
-# 🔥 SINGLE ADMIN ID AS REQUESTED
-ADMIN_IDS = [6031032502,6941366213] 
+# 🔥 ADMIN IDs
+ADMIN_IDS = [6031032502, 6941366213] 
 
 CHANNELS = ["@backupchannel4262", "@Brother_United_Team", "@brother_otp_rcv", "@Brother_RangeGroup"]
 
@@ -113,6 +114,22 @@ def get_hash_key(number_str):
     clean_str = re.sub(r'\D', '', str(number_str))
     if not clean_str: return "UNKNOWN"
     return clean_str[-8:]
+
+def clean_message_text(raw_text):
+    """
+    🔥 REMOVES HTML GARBAGE & PREVENTS SPAM-LIKE OUTPUT!
+    Transforms: "&lt;#&gt; <span class='masked-stars'>*****</span>"
+    Into: "<#> *****"
+    """
+    if not raw_text:
+        return "No Message Provided"
+    
+    text = str(raw_text)
+    # Convert HTML entities like &lt; to <
+    text = html.unescape(text)
+    # Remove HTML tags (e.g., <span class="masked">)
+    text = re.sub(r'<[^>]+>', '', text)
+    return text.strip()
 
 
 # ==============================================================================
@@ -498,7 +515,7 @@ async def update_dynamic_batch_message(context, chat_id, msg_id, batch_key):
 
 
 # ==============================================================================
-# 🤖 AUTO RANGE FORWARDER JOB (WITH FULL MESSAGE & BUTTONS)
+# 🤖 AUTO RANGE FORWARDER JOB (WITH FULL MESSAGE & HTML CLEANER)
 # ==============================================================================
 
 async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
@@ -523,13 +540,17 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
                     r_val = log.get('range')
                     raw_app = str(log.get('app_name', 'Unknown')).lower()
                     c_name = log.get('country', 'Unknown')
-                    msg_text = str(log.get('message', ''))
+                    
+                    # 🔥 STEX sometimes uses 'msg' or 'otp' instead of 'message'
+                    raw_msg = log.get('message', log.get('msg', log.get('otp', 'No message')))
+                    msg_text = clean_message_text(raw_msg)
                     
                     if any(app in raw_app for app in allowed_apps) and r_val and r_val not in SENT_RANGES:
                         SENT_RANGES.add(r_val)
                         if len(SENT_RANGES) > 5000: SENT_RANGES.clear()
                         
-                        display_app = "PC Clone" if ('facebook' in raw_app and '******' in msg_text) else log.get('app_name', 'Unknown').title()
+                        # 🔥 PC Clone logic removed as requested! App name will stay exactly as it is.
+                        display_app = log.get('app_name', 'Unknown').title()
                         
                         # 🔥 FULL MESSAGE ADDED AS REQUESTED
                         range_msg = (
@@ -562,13 +583,17 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
                     r_val = log.get('range')
                     raw_app = str(log.get('service_name', 'Unknown')).lower()
                     c_name = log.get('country', 'Unknown')
-                    msg_text = str(log.get('msg', ''))
+                    
+                    # 🔥 MK Network returns dirty HTML in 'msg'
+                    raw_msg = log.get('msg', log.get('message', log.get('otp', 'No message')))
+                    msg_text = clean_message_text(raw_msg)
                     
                     if any(app in raw_app for app in allowed_apps) and r_val and r_val not in SENT_RANGES:
                         SENT_RANGES.add(r_val)
                         if len(SENT_RANGES) > 5000: SENT_RANGES.clear()
                         
-                        display_app = "PC Clone" if ('facebook' in raw_app and '******' in msg_text) else log.get('service_name', 'Unknown').title()
+                        # 🔥 PC Clone logic removed as requested! App name will stay exactly as it is.
+                        display_app = log.get('service_name', 'Unknown').title()
                         
                         # 🔥 FULL MESSAGE ADDED AS REQUESTED
                         range_msg = (
@@ -621,13 +646,15 @@ async def process_found_otp(context, hash_key, api_num, code_only, svc_name, raw
     asyncio.create_task(context.bot.send_message(chat_id=chat_id, text=user_msg, parse_mode=ParseMode.HTML))
     
     # 🔥 FORWARD TO OTP GROUP WITH DEVELOPER & BOT LINK BUTTONS
+    clean_raw_msg = clean_message_text(raw_msg)
+    
     group_msg = (
         f"🔔 <b>Otp Received</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📱 Number - <code>{full_num}</code>\n"
         f"🛒 Service - <pre>{html.escape(str(svc_name))}</pre>\n"
         f"🔑 Code - <code>{code_only}</code>\n"
-        f"✉️ Full sms - <pre>{html.escape(str(raw_msg))}</pre>"
+        f"✉️ Full sms - <pre>{html.escape(str(clean_raw_msg))}</pre>"
     )
     group_kb = [
         [InlineKeyboardButton("👨‍💻 Developer", url=DEVELOPER_LINK)],
@@ -1241,7 +1268,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================================================================
 
 async def web_server_handler(request):
-    return web.Response(text="Bot is running perfectly! V24 Enterprise Edition with Parallel High-Speed Processing.")
+    return web.Response(text="Bot is running perfectly! V26 Enterprise Edition with Parallel High-Speed Processing.")
 
 async def start_dummy_server():
     try:
@@ -1283,5 +1310,5 @@ if __name__ == "__main__":
     # Forwarder runs normally
     app.job_queue.run_repeating(auto_range_forwarder_job, interval=60, first=10)
     
-    logger.info("✨ VERSION 24.0 ENTERPRISE (PARALLEL PROCESSING + UI UPDATES) STARTED SUCCESSFULLY... ✨")
+    logger.info("✨ VERSION 26.0 ENTERPRISE (NO PC CLONE) STARTED SUCCESSFULLY... ✨")
     app.run_polling(drop_pending_updates=True)
