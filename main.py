@@ -48,7 +48,7 @@ from aiohttp import web
 # ⚙️ CONFIGURATION & CREDENTIALS
 # ==============================================================================
 
-TOKEN = "8784714590:AAGW1bthOSIh2HUl2vPCYS_zv13zEz7BOsg"
+TOKEN = "8635914509:AAHvuII5fmdBxjoXKovvxy1sPVWMHqkTpzk"
 
 # 🔥 SINGLE ADMIN ID AS REQUESTED
 ADMIN_IDS = [6031032502,6941366213] 
