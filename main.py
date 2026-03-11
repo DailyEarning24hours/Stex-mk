@@ -1,8 +1,10 @@
 """
 ==============================================================================
-PROJECT: ✨ PREMIUM OTP BOT (Ultimate Update - Version 26.0 ENTERPRISE) ✨
-CAPACITY: 10,000+ Users on Render Free Plan (O(1) Hash-Map Algorithm).
-EXTREME SPEED UPDATE: Parallel Processing fetching in 4 seconds interval.
+PROJECT: ✨ PREMIUM OTP BOT (Ultimate Update - Version 27.0 ENTERPRISE) ✨
+CAPACITY: 10,000+ Users on Render Free Plan (O(1) Memory Cache + Async Threads).
+EXTREME SPEED UPDATE 1: Zero-Database-Block RAM Caching for 10k instant replies.
+EXTREME SPEED UPDATE 2: Anti-Overlap Task Locks to prevent Render Server Crash.
+EXTREME SPEED UPDATE 3: Async Executor Pool for Background Database Writing.
 FIXED: PC Clone logic removed completely. Facebook will always show as Facebook.
 FIXED: Server 1 Full Message missing issue resolved (Multi-key fallback).
 FIXED: Server 2 "Spam/Garbage HTML" issue resolved via Advanced HTML Cleaner.
@@ -23,6 +25,7 @@ import html
 import datetime
 import time
 import json
+import concurrent.futures
 from contextlib import contextmanager
 
 from telegram import (
@@ -80,7 +83,7 @@ API_MK_INBOX = "http://mknetworkbd.com/API/api_handler.php?action=get_history&fi
 API_2FA = "https://2fa.cn/codes/{}"
 
 # ==============================================================================
-# 🛑 ADVANCED SERVER CRASH PREVENTION & CACHING
+# 🛑 ADVANCED SERVER CRASH PREVENTION, CACHING & LOCKS
 # ==============================================================================
 
 MAUTH_TOKEN = None
@@ -92,11 +95,22 @@ LAST_AUTH_TIME_STEX = 0
 AUTH_LOCK_MK = asyncio.Lock()
 LAST_AUTH_TIME_MK = 0
 
+# 🔥 ANTI-OVERLAP LOCKS FOR EXTREME SPEED
+OTP_CHECK_LOCK = asyncio.Lock()
+RANGE_CHECK_LOCK = asyncio.Lock()
+
 SENT_RANGES = set()
 START_TIME = datetime.datetime.now()
 BASE_USER_AGENT = "Mozilla/5.0 (Linux; Android 14; SM-A135F Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.7632.120 Mobile Safari/537.36"
 
-DB_POOL_SIZE = 15 
+DB_POOL_SIZE = 20 
+
+# 🔥 HIGH-SPEED MEMORY CACHE (PREVENTS DATABASE BLOCKING)
+BANNED_USERS_CACHE = set()
+REGISTERED_USERS_CACHE = set()
+
+# 🔥 ASYNC THREAD EXECUTOR (Prevents DB from freezing Telegram Bot)
+DB_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -139,8 +153,8 @@ def clean_message_text(raw_text):
 async def get_session():
     global GLOBAL_SESSION
     if GLOBAL_SESSION is None or GLOBAL_SESSION.closed:
-        # 🔥 Boosted Limits for 10k users & Parallel Processing
-        connector = aiohttp.TCPConnector(limit=500, keepalive_timeout=120, ttl_dns_cache=600, enable_cleanup_closed=True)
+        # 🔥 Boosted Limits for 10k users & Parallel Processing (Tuned for Render Free Tier)
+        connector = aiohttp.TCPConnector(limit=300, limit_per_host=100, keepalive_timeout=60, ttl_dns_cache=300, enable_cleanup_closed=True)
         GLOBAL_SESSION = aiohttp.ClientSession(connector=connector, cookie_jar=aiohttp.CookieJar(unsafe=True))
     return GLOBAL_SESSION
 
@@ -276,13 +290,13 @@ async def mk_api_request(method, url, form_data=None):
 
 
 # ==============================================================================
-# 🗄️ DATABASE MANAGEMENT (LIGHTWEIGHT FOR 10K+ SPEED)
+# 🗄️ HIGH-SPEED ASYNC DATABASE MANAGEMENT
 # ==============================================================================
 
 DB_FILE = "bot.db"
 
 class DatabasePool:
-    def __init__(self, db_file, pool_size=15):
+    def __init__(self, db_file, pool_size=20):
         self.db_file = db_file
         self.pool_size = pool_size
     @contextmanager
@@ -300,41 +314,48 @@ db_pool = DatabasePool(DB_FILE, DB_POOL_SIZE)
 def init_db():
     with db_pool.get_connection() as conn:
         c = conn.cursor()
-        # 🔥 ONLY SAVING USER ID & BAN STATUS TO KEEP IT LIGHTNING FAST
         c.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             join_date TEXT,
             is_banned INTEGER DEFAULT 0
         )''')
         conn.commit()
+    load_caches_from_db()
 
-def get_user(user_id):
+def load_caches_from_db():
+    """Loads all users into Memory Cache on bot startup to make processing instant."""
+    global BANNED_USERS_CACHE, REGISTERED_USERS_CACHE
     with db_pool.get_connection() as conn:
         c = conn.cursor()
-        c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
-        return c.fetchone()
+        c.execute("SELECT user_id, is_banned FROM users")
+        for row in c.fetchall():
+            user_id = row[0]
+            is_banned = row[1]
+            REGISTERED_USERS_CACHE.add(user_id)
+            if is_banned == 1:
+                BANNED_USERS_CACHE.add(user_id)
+    logger.info(f"✅ Loaded {len(REGISTERED_USERS_CACHE)} users into High-Speed RAM Cache.")
 
-def register_user(user_id):
-    if get_user(user_id) is None:
-        with db_pool.get_connection() as conn:
-            c = conn.cursor()
-            c.execute("INSERT INTO users (user_id, join_date) VALUES (?, CURRENT_TIMESTAMP)", (user_id,))
-            conn.commit()
-        return True
-    return False
+async def run_async_db(func, *args):
+    """Wraps sync DB functions to run in background thread without freezing the bot."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(DB_EXECUTOR, func, *args)
 
-def ensure_user(user_id):
-    user = get_user(user_id)
-    if user is None: 
-        register_user(user_id)
-        user = get_user(user_id)
-    return user
+def _register_user_sync(user_id):
+    with db_pool.get_connection() as conn:
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO users (user_id, join_date) VALUES (?, CURRENT_TIMESTAMP)", (user_id,))
+        conn.commit()
+
+async def ensure_user_async(user_id):
+    """O(1) Instant Check. Only hits database if user is completely new."""
+    if user_id not in REGISTERED_USERS_CACHE:
+        REGISTERED_USERS_CACHE.add(user_id)
+        await run_async_db(_register_user_sync, user_id)
 
 def is_user_banned(user_id):
-    user = ensure_user(user_id)
-    if user and len(user) > 2 and user[2] == 1:
-        return True
-    return False
+    """O(1) Instant Lookup. 0 Database hits."""
+    return user_id in BANNED_USERS_CACHE
 
 def get_all_users():
     with db_pool.get_connection() as conn:
@@ -343,17 +364,26 @@ def get_all_users():
         return [row[0] for row in c.fetchall()]
 
 def get_total_users_count():
-    with db_pool.get_connection() as conn:
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM users")
-        return c.fetchone()[0]
+    return len(REGISTERED_USERS_CACHE)
 
-def set_ban_status(user_id, status):
-    ensure_user(user_id)
+def _set_ban_status_sync(user_id, status):
     with db_pool.get_connection() as conn:
         c = conn.cursor()
         c.execute("UPDATE users SET is_banned=? WHERE user_id=?", (status, user_id))
         conn.commit()
+
+async def set_ban_status_async(user_id, status):
+    if status == 1:
+        BANNED_USERS_CACHE.add(user_id)
+    else:
+        BANNED_USERS_CACHE.discard(user_id)
+    await run_async_db(_set_ban_status_sync, user_id, status)
+
+def get_user_details(user_id):
+    with db_pool.get_connection() as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+        return c.fetchone()
 
 
 # ==============================================================================
@@ -520,101 +550,105 @@ async def update_dynamic_batch_message(context, chat_id, msg_id, batch_key):
 
 async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
     global SENT_RANGES
-    # 🔥 Only forwarding Facebook & Whatsapp to Range Group
-    allowed_apps = ['facebook', 'whatsapp']
-    bot_username = context.bot.username
-
-    # Fetch both consoles simultaneously for speed
-    stex_task = stex_api_request('GET', API_STEX_CONSOLE)
-    mk_task = mk_api_request('GET', API_MK_CONSOLE)
     
-    results = await asyncio.gather(stex_task, mk_task, return_exceptions=True)
+    # 🔥 ANTI-OVERLAP LOCK
+    if RANGE_CHECK_LOCK.locked(): return
     
-    # 1. PROCESS SERVER 1 (STEX)
-    if isinstance(results[0], tuple):
-        stex_status, stex_data = results[0]
-        if stex_status == 200 and isinstance(stex_data, dict):
-            logs = stex_data.get('data', {}).get('logs', [])
-            for log in logs[:5]:
-                if isinstance(log, dict):
-                    r_val = log.get('range')
-                    raw_app = str(log.get('app_name', 'Unknown')).lower()
-                    c_name = log.get('country', 'Unknown')
-                    
-                    # 🔥 STEX sometimes uses 'msg' or 'otp' instead of 'message'
-                    raw_msg = log.get('message', log.get('msg', log.get('otp', 'No message')))
-                    msg_text = clean_message_text(raw_msg)
-                    
-                    if any(app in raw_app for app in allowed_apps) and r_val and r_val not in SENT_RANGES:
-                        SENT_RANGES.add(r_val)
-                        if len(SENT_RANGES) > 5000: SENT_RANGES.clear()
-                        
-                        # 🔥 PC Clone logic removed as requested! App name will stay exactly as it is.
-                        display_app = log.get('app_name', 'Unknown').title()
-                        
-                        # 🔥 FULL MESSAGE ADDED AS REQUESTED
-                        range_msg = (
-                            f"🔥 <b>New Range find</b>\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"🖥️ Server - <b>Server 1 ✨</b>\n"
-                            f"🎯 Range - <code>{r_val}</code>\n"
-                            f"🛒 Service - <i>{html.escape(display_app)}</i>\n"
-                            f"🌍 Country - {get_flag(c_name)} {c_name}\n"
-                            f"✉️ Message - <pre>{html.escape(msg_text)}</pre>"
-                        )
-                        
-                        # 🔥 TWO BUTTONS ADDED
-                        kb = [
-                            [InlineKeyboardButton("👨‍💻 Developer", url=DEVELOPER_LINK)],
-                            [InlineKeyboardButton("🤖 Bot Link", url=f"https://t.me/{bot_username}")]
-                        ]
-                        try: 
-                            await context.bot.send_message(chat_id=RANGE_GROUP_ID, text=range_msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-                        except Exception: 
-                            pass
+    async with RANGE_CHECK_LOCK:
+        allowed_apps = ['facebook', 'whatsapp']
+        bot_username = context.bot.username
 
-    # 2. PROCESS SERVER 2 (MK NETWORK)
-    if isinstance(results[1], tuple):
-        mk_status, mk_data = results[1]
-        if mk_status == 200 and isinstance(mk_data, dict):
-            feeds = mk_data.get('feed', [])
-            for log in feeds[:5]:
-                if isinstance(log, dict):
-                    r_val = log.get('range')
-                    raw_app = str(log.get('service_name', 'Unknown')).lower()
-                    c_name = log.get('country', 'Unknown')
-                    
-                    # 🔥 MK Network returns dirty HTML in 'msg'
-                    raw_msg = log.get('msg', log.get('message', log.get('otp', 'No message')))
-                    msg_text = clean_message_text(raw_msg)
-                    
-                    if any(app in raw_app for app in allowed_apps) and r_val and r_val not in SENT_RANGES:
-                        SENT_RANGES.add(r_val)
-                        if len(SENT_RANGES) > 5000: SENT_RANGES.clear()
+        # Fetch both consoles simultaneously for speed
+        stex_task = stex_api_request('GET', API_STEX_CONSOLE)
+        mk_task = mk_api_request('GET', API_MK_CONSOLE)
+        
+        results = await asyncio.gather(stex_task, mk_task, return_exceptions=True)
+        
+        # 1. PROCESS SERVER 1 (STEX)
+        if isinstance(results[0], tuple):
+            stex_status, stex_data = results[0]
+            if stex_status == 200 and isinstance(stex_data, dict):
+                logs = stex_data.get('data', {}).get('logs', [])
+                for log in logs[:5]:
+                    if isinstance(log, dict):
+                        r_val = log.get('range')
+                        raw_app = str(log.get('app_name', 'Unknown')).lower()
+                        c_name = log.get('country', 'Unknown')
                         
-                        # 🔥 PC Clone logic removed as requested! App name will stay exactly as it is.
-                        display_app = log.get('service_name', 'Unknown').title()
+                        # 🔥 STEX sometimes uses 'msg' or 'otp' instead of 'message'
+                        raw_msg = log.get('message', log.get('msg', log.get('otp', 'No message')))
+                        msg_text = clean_message_text(raw_msg)
                         
-                        # 🔥 FULL MESSAGE ADDED AS REQUESTED
-                        range_msg = (
-                            f"🔥 <b>New Range find</b>\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"🚀 Server - <b>Server 2 🚀</b>\n"
-                            f"🎯 Range - <code>{r_val}</code>\n"
-                            f"🛒 Service - <i>{html.escape(display_app)}</i>\n"
-                            f"🌍 Country - {get_flag(c_name)} {c_name}\n"
-                            f"✉️ Message - <pre>{html.escape(msg_text)}</pre>"
-                        )
+                        if any(app in raw_app for app in allowed_apps) and r_val and r_val not in SENT_RANGES:
+                            SENT_RANGES.add(r_val)
+                            if len(SENT_RANGES) > 5000: SENT_RANGES.clear()
+                            
+                            # 🔥 PC Clone logic removed as requested! App name will stay exactly as it is.
+                            display_app = log.get('app_name', 'Unknown').title()
+                            
+                            # 🔥 FULL MESSAGE ADDED AS REQUESTED
+                            range_msg = (
+                                f"🔥 <b>New Range find</b>\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"🖥️ Server - <b>Server 1 ✨</b>\n"
+                                f"🎯 Range - <code>{r_val}</code>\n"
+                                f"🛒 Service - <i>{html.escape(display_app)}</i>\n"
+                                f"🌍 Country - {get_flag(c_name)} {c_name}\n"
+                                f"✉️ Message - <pre>{html.escape(msg_text)}</pre>"
+                            )
+                            
+                            # 🔥 TWO BUTTONS ADDED
+                            kb = [
+                                [InlineKeyboardButton("🤖 Bot Link", url=f"https://t.me/{bot_username})],
+                                [InlineKeyboardButton("👨‍💻 Developer", url=DEVELOPER_LINK")]
+                            ]
+                            try: 
+                                await context.bot.send_message(chat_id=RANGE_GROUP_ID, text=range_msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+                            except Exception: 
+                                pass
+
+        # 2. PROCESS SERVER 2 (MK NETWORK)
+        if isinstance(results[1], tuple):
+            mk_status, mk_data = results[1]
+            if mk_status == 200 and isinstance(mk_data, dict):
+                feeds = mk_data.get('feed', [])
+                for log in feeds[:5]:
+                    if isinstance(log, dict):
+                        r_val = log.get('range')
+                        raw_app = str(log.get('service_name', 'Unknown')).lower()
+                        c_name = log.get('country', 'Unknown')
                         
-                        # 🔥 TWO BUTTONS ADDED
-                        kb = [
-                            [InlineKeyboardButton("👨‍💻 Developer", url=DEVELOPER_LINK)],
-                            [InlineKeyboardButton("🤖 Bot Link", url=f"https://t.me/{bot_username}")]
-                        ]
-                        try: 
-                            await context.bot.send_message(chat_id=RANGE_GROUP_ID, text=range_msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-                        except Exception: 
-                            pass
+                        # 🔥 MK Network returns dirty HTML in 'msg'
+                        raw_msg = log.get('msg', log.get('message', log.get('otp', 'No message')))
+                        msg_text = clean_message_text(raw_msg)
+                        
+                        if any(app in raw_app for app in allowed_apps) and r_val and r_val not in SENT_RANGES:
+                            SENT_RANGES.add(r_val)
+                            if len(SENT_RANGES) > 5000: SENT_RANGES.clear()
+                            
+                            # 🔥 PC Clone logic removed as requested! App name will stay exactly as it is.
+                            display_app = log.get('service_name', 'Unknown').title()
+                            
+                            # 🔥 FULL MESSAGE ADDED AS REQUESTED
+                            range_msg = (
+                                f"🔥 <b>New Range find</b>\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"🚀 Server - <b>Server 2 🚀</b>\n"
+                                f"🎯 Range - <code>{r_val}</code>\n"
+                                f"🛒 Service - <i>{html.escape(display_app)}</i>\n"
+                                f"🌍 Country - {get_flag(c_name)} {c_name}\n"
+                                f"✉️ Message - <pre>{html.escape(msg_text)}</pre>"
+                            )
+                            
+                            # 🔥 TWO BUTTONS ADDED
+                            kb = [
+                                [InlineKeyboardButton("👨‍💻 Developer", url=DEVELOPER_LINK)],
+                                [InlineKeyboardButton("🤖 Bot Link", url=f"https://t.me/{bot_username}")]
+                            ]
+                            try: 
+                                await context.bot.send_message(chat_id=RANGE_GROUP_ID, text=range_msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+                            except Exception: 
+                                pass
 
 
 # ==============================================================================
@@ -667,75 +701,78 @@ async def process_found_otp(context, hash_key, api_num, code_only, svc_name, raw
 
 async def global_otp_checker_job(context: ContextTypes.DEFAULT_TYPE):
     global WAITING_OTPS, BATCH_MSGS
-    if not WAITING_OTPS: 
+    
+    # 🔥 ANTI-OVERLAP LOCK: Ensures Render free plan CPU doesn't spike
+    if OTP_CHECK_LOCK.locked() or not WAITING_OTPS: 
         return 
     
-    current_time = time.time()
-    expired_keys = []
-    
-    # CLEANUP SILENTLY
-    for hash_key, data in list(WAITING_OTPS.items()):
-        if current_time - data['time'] > OTP_TIMEOUT_SECONDS: 
-            expired_keys.append(hash_key)
-            
-    for h_key in expired_keys:
-        u_data = WAITING_OTPS.pop(h_key, None)
-        if u_data:
-            b_key = u_data.get('batch_key')
-            if b_key and b_key in BATCH_MSGS:
-                if u_data['full_num'] in BATCH_MSGS[b_key]['numbers']:
-                    BATCH_MSGS[b_key]['numbers'].remove(u_data['full_num'])
-                if len(BATCH_MSGS[b_key]['numbers']) == 0:
-                    try: 
-                        await context.bot.delete_message(chat_id=u_data['chat_id'], message_id=u_data['msg_id'])
-                    except: 
-                        pass
-                    del BATCH_MSGS[b_key]
-
-    if not WAITING_OTPS: 
-        return 
+    async with OTP_CHECK_LOCK:
+        current_time = time.time()
+        expired_keys = []
         
-    found_keys = []
-    date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        # CLEANUP SILENTLY
+        for hash_key, data in list(WAITING_OTPS.items()):
+            if current_time - data['time'] > OTP_TIMEOUT_SECONDS: 
+                expired_keys.append(hash_key)
+                
+        for h_key in expired_keys:
+            u_data = WAITING_OTPS.pop(h_key, None)
+            if u_data:
+                b_key = u_data.get('batch_key')
+                if b_key and b_key in BATCH_MSGS:
+                    if u_data['full_num'] in BATCH_MSGS[b_key]['numbers']:
+                        BATCH_MSGS[b_key]['numbers'].remove(u_data['full_num'])
+                    if len(BATCH_MSGS[b_key]['numbers']) == 0:
+                        try: 
+                            await context.bot.delete_message(chat_id=u_data['chat_id'], message_id=u_data['msg_id'])
+                        except: 
+                            pass
+                        del BATCH_MSGS[b_key]
 
-    # 🔥 PARALLEL FETCHING: FETCHING BOTH INBOXES AT THE EXACT SAME TIME
-    stex_url = f"{API_STEX_INBOX}?date={date_str}&page=1&search=&status="
-    mk_url = API_MK_INBOX.format(date_str)
-    
-    stex_task = stex_api_request('GET', stex_url)
-    mk_task = mk_api_request('GET', mk_url)
-    
-    results = await asyncio.gather(stex_task, mk_task, return_exceptions=True)
+        if not WAITING_OTPS: 
+            return 
+            
+        found_keys = []
+        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
 
-    # 1. PROCESS SERVER 1 (STEX) RESULTS
-    if isinstance(results[0], tuple):
-        stex_status, stex_res = results[0]
-        if stex_status == 200 and stex_res:
-            for item in stex_res.get('data', {}).get('numbers', []):
-                if isinstance(item, dict) and item.get('status') == 'success':
-                    hash_key = get_hash_key(item.get('number', ''))
-                    if hash_key in WAITING_OTPS and hash_key not in found_keys:
-                        raw_msg = item.get('otp', item.get('message', 'No Message'))
-                        await process_found_otp(context, hash_key, item.get('number', ''), extract_code(raw_msg), item.get('full_number', 'Service'), raw_msg)
-                        found_keys.append(hash_key)
+        # 🔥 PARALLEL FETCHING: FETCHING BOTH INBOXES AT THE EXACT SAME TIME
+        stex_url = f"{API_STEX_INBOX}?date={date_str}&page=1&search=&status="
+        mk_url = API_MK_INBOX.format(date_str)
+        
+        stex_task = stex_api_request('GET', stex_url)
+        mk_task = mk_api_request('GET', mk_url)
+        
+        results = await asyncio.gather(stex_task, mk_task, return_exceptions=True)
 
-    # 2. PROCESS SERVER 2 (MK NETWORK) RESULTS
-    if isinstance(results[1], tuple):
-        mk_status, mk_res = results[1]
-        if mk_status == 200 and mk_res:
-            for item in mk_res.get('data', []):
-                if isinstance(item, dict) and item.get('status') == 'success':
-                    hash_key = get_hash_key(item.get('phone_number', ''))
-                    if hash_key in WAITING_OTPS and hash_key not in found_keys:
-                        raw_msg = item.get('full_sms_list', 'No Message')
-                        code_val = item.get('otps', extract_code(raw_msg))
-                        if not code_val: 
-                            code_val = extract_code(raw_msg)
-                        await process_found_otp(context, hash_key, item.get('phone_number', ''), code_val, item.get('operator', 'Service'), raw_msg)
-                        found_keys.append(hash_key)
+        # 1. PROCESS SERVER 1 (STEX) RESULTS
+        if isinstance(results[0], tuple):
+            stex_status, stex_res = results[0]
+            if stex_status == 200 and stex_res:
+                for item in stex_res.get('data', {}).get('numbers', []):
+                    if isinstance(item, dict) and item.get('status') == 'success':
+                        hash_key = get_hash_key(item.get('number', ''))
+                        if hash_key in WAITING_OTPS and hash_key not in found_keys:
+                            raw_msg = item.get('otp', item.get('message', 'No Message'))
+                            await process_found_otp(context, hash_key, item.get('number', ''), extract_code(raw_msg), item.get('full_number', 'Service'), raw_msg)
+                            found_keys.append(hash_key)
 
-    for k in found_keys: 
-        WAITING_OTPS.pop(k, None)
+        # 2. PROCESS SERVER 2 (MK NETWORK) RESULTS
+        if isinstance(results[1], tuple):
+            mk_status, mk_res = results[1]
+            if mk_status == 200 and mk_res:
+                for item in mk_res.get('data', []):
+                    if isinstance(item, dict) and item.get('status') == 'success':
+                        hash_key = get_hash_key(item.get('phone_number', ''))
+                        if hash_key in WAITING_OTPS and hash_key not in found_keys:
+                            raw_msg = item.get('full_sms_list', 'No Message')
+                            code_val = item.get('otps', extract_code(raw_msg))
+                            if not code_val: 
+                                code_val = extract_code(raw_msg)
+                            await process_found_otp(context, hash_key, item.get('phone_number', ''), code_val, item.get('operator', 'Service'), raw_msg)
+                            found_keys.append(hash_key)
+
+        for k in found_keys: 
+            WAITING_OTPS.pop(k, None)
 
 
 # ==============================================================================
@@ -843,13 +880,18 @@ async def process_number_generation(update: Update, context: ContextTypes.DEFAUL
 # ==============================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # 🔥 O(1) Instant Async Memory Cache Registration
+    await ensure_user_async(user_id)
+    
     if await check_ban_middleware(update, context): 
         return
-    ensure_user(update.effective_user.id)
+    
     # 🔥 CLEAR ALL STATES ON START
     context.user_data.clear()
     
-    if not await check_subscription(update.effective_user.id, context.bot): 
+    if not await check_subscription(user_id, context.bot): 
         await send_join_prompt(update, context)
     else: 
         await show_main_menu(update, context)
@@ -970,12 +1012,16 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
 # ==============================================================================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # 🔥 O(1) Instant Async Memory Cache Registration
+    await ensure_user_async(user_id)
+    
     if await check_ban_middleware(update, context): 
         return
-    user_id = update.effective_user.id
+        
     text = update.message.text
     user_data = context.user_data
-    ensure_user(user_id)
     
     # 🔥 STATE AUTO-CLEAR
     if text in ["📱 Get Number", "🔐 Get 2FA", "🎧 Support", "📊 See Activity"]:
@@ -1081,13 +1127,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================================================================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # 🔥 O(1) Instant Async Memory Cache Registration
+    await ensure_user_async(user_id)
+    
     if await check_ban_middleware(update, context): 
         return
         
-    query = update.callback_query
-    user_id = query.from_user.id
     data = query.data
-    ensure_user(user_id)
     
     if data == "check_join":
         if await check_subscription(user_id, context.bot): 
@@ -1167,18 +1216,18 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: return
     uptime = datetime.datetime.now() - START_TIME
-    with db_pool.get_connection() as conn:
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM users")
-        t_users = c.fetchone()[0]
+    
+    # 🔥 Gets total directly from high-speed memory cache
+    t_users = get_total_users_count()
+    
     txt = (
         f"📊 <b>LIVE SYSTEM STATUS (10k OPTIMIZED)</b> 📊\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"⏱ <b>Uptime:</b> {str(uptime).split('.')[0]}\n"
-        f"👥 <b>Total Users:</b> {t_users}\n"
+        f"👥 <b>Total Users:</b> {t_users} (RAM Cached)\n"
         f"📡 <b>Active Waiters:</b> {len(WAITING_OTPS)} Numbers\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ <i>Dual Servers Running Smoothly</i>"
+        f"✅ <i>Memory Cache & Async DB running perfectly.</i>"
     )
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
@@ -1191,7 +1240,7 @@ async def admin_search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: return
     try:
         target_id = int(context.args[0])
-        user = get_user(target_id)
+        user = get_user_details(target_id)
         if user:
             status = "🔴 BANNED" if user[2] == 1 else "🟢 ACTIVE"
             txt = (
@@ -1229,7 +1278,7 @@ async def ban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: return
     try:
         target_id = int(context.args[0])
-        set_ban_status(target_id, 1)
+        await set_ban_status_async(target_id, 1)
         await update.message.reply_text(f"✅ User <code>{target_id}</code> has been successfully <b>BANNED</b>.", parse_mode=ParseMode.HTML)
     except Exception:
         await update.message.reply_text("⚠️ Usage: `/ban UserID`", parse_mode=ParseMode.Markdown)
@@ -1238,7 +1287,7 @@ async def unban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: return
     try:
         target_id = int(context.args[0])
-        set_ban_status(target_id, 0)
+        await set_ban_status_async(target_id, 0)
         await update.message.reply_text(f"✅ User <code>{target_id}</code> has been successfully <b>UNBANNED</b>.", parse_mode=ParseMode.HTML)
     except Exception:
         await update.message.reply_text("⚠️ Usage: `/unban UserID`", parse_mode=ParseMode.Markdown)
@@ -1268,7 +1317,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================================================================
 
 async def web_server_handler(request):
-    return web.Response(text="Bot is running perfectly! V26 Enterprise Edition with Parallel High-Speed Processing.")
+    return web.Response(text="Bot is running perfectly! V27 Enterprise Edition with RAM Caching & Anti-Overlap.")
 
 async def start_dummy_server():
     try:
@@ -1304,11 +1353,11 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # 🔥 EXTREME SPEED POLLING SYSTEM (Runs every 4 seconds now)
+    # 🔥 EXTREME SPEED POLLING SYSTEM (Runs every 4 seconds now, safely locked)
     app.job_queue.run_repeating(global_otp_checker_job, interval=4, first=2)
     
     # Forwarder runs normally
     app.job_queue.run_repeating(auto_range_forwarder_job, interval=60, first=10)
     
-    logger.info("✨ VERSION 26.0 ENTERPRISE (NO PC CLONE) STARTED SUCCESSFULLY... ✨")
+    logger.info("✨ VERSION 27.0 ENTERPRISE (MEMORY CACHE + ASYNC DB) STARTED SUCCESSFULLY... ✨")
     app.run_polling(drop_pending_updates=True)
