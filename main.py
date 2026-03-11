@@ -55,8 +55,8 @@ ADMIN_IDS = [6031032502,6941366213]
 
 CHANNELS = ["@backupchannel4262", "@Brother_United_Team", "@brother_otp_rcv", "@Brother_RangeGroup"]
 
-RANGE_GROUP_ID = -1003627708272
-OTP_GROUP_ID = -1003830374258
+RANGE_GROUP_ID = -1003301217502
+OTP_GROUP_ID = -1003860012419
 
 DEVELOPER_LINK = "https://t.me/RTx2R"
 
