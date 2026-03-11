@@ -484,7 +484,7 @@ async def update_dynamic_batch_message(context, chat_id, msg_id, batch_key):
         )
         
         kb = [
-            [InlineKeyboardButton("💬 OTP GROUP", url="https://t.me/RTxOtpX")],
+            [InlineKeyboardButton("💬 OTP GROUP", url="https://t.me/brother_otp_rcv")],
             [
                 InlineKeyboardButton("🔄 Change Number", callback_data="change_num"), 
                 InlineKeyboardButton("🔙 Back to Server", callback_data="go_main")
@@ -772,7 +772,7 @@ async def process_number_generation(update: Update, context: ContextTypes.DEFAUL
         )
         
         kb = [
-            [InlineKeyboardButton("💬 OTP GROUP", url="https://t.me/RTxOtpX")],
+            [InlineKeyboardButton("💬 OTP GROUP", url="https://t.me/brother_otp_rcv")],
             [
                 InlineKeyboardButton("🔄 Change Number", callback_data="change_num"), 
                 InlineKeyboardButton("🔙 Back to Server", callback_data="go_main")
@@ -1031,8 +1031,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif text == "📊 See Activity":
         kb = [
-            [InlineKeyboardButton("🔥 Range Channel", url="https://t.me/ConsoleXRT")],
-            [InlineKeyboardButton("💬 OTP Channel", url="https://t.me/RTxOtpX")]
+            [InlineKeyboardButton("🔥 Range Channel", url="https://t.me/Brother_RangeGroup")],
+            [InlineKeyboardButton("💬 OTP Channel", url="https://t.me/brother_otp_rcv")]
         ]
         await update.message.reply_text(
             "📊 <b>BOT ACTIVITY LINKS</b>\n━━━━━━━━━━━━━━━━━━━━\n<i>Join to see live Bot activity:</i>", 
