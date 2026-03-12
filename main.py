@@ -1,16 +1,15 @@
 """
 ==============================================================================
-PROJECT: ✨ PREMIUM OTP BOT (Ultimate Update - Version 28.0 ENTERPRISE) ✨
+PROJECT: ✨ PREMIUM OTP BOT (Ultimate Update - Version 29.0 ENTERPRISE) ✨
 CAPACITY: 20,000+ Users on Render Free Plan (100x Speed & Async Threads).
 EXTREME SPEED UPDATE 1: 2,000 Concurrent HTTP Sockets & 100 DB Thread Workers.
 EXTREME SPEED UPDATE 2: Zero-Database-Block RAM Caching for 20k instant replies.
 EXTREME SPEED UPDATE 3: Anti-Overlap Task Locks to prevent Render Server Crash.
+NEW FEATURE: MULTIPLE OTP SUPPORT! Bot listens for 20 full mins & sends all OTPs.
+NEW FEATURE: Masked Phone Numbers in OTP Group (e.g. 88017•••5678) for privacy.
+NEW FEATURE: "Range Group" Link added perfectly next to the Custom Range button.
 FIXED: Server 2 MK Network Range Forwarding issue fully resolved (Syntax fix).
 FIXED: Server 1 Full Message "No message" bug resolved via Deep-Key parsing.
-NEW FEATURE: Telegram & Instagram officially added to Category Selection.
-NEW FEATURE: Developer & Bot Link buttons are now perfectly Side-by-Side.
-NEW FEATURE: Generates 3 Numbers. "Get Number Again" appears after all 3 are received.
-ERROR HANDLING: 100% hidden HTTP 401/500 errors. Premium fallback messages used.
 FORMATTING: Fully Expanded, No Shortcuts, Maximum Stability & Beauty.
 ==============================================================================
 """
@@ -146,6 +145,19 @@ def clean_message_text(raw_text):
     text = re.sub(r'<[^>]+>', '', text)
     return text.strip()
 
+def mask_phone_number(num_str):
+    """
+    🔥 MASKS PHONE NUMBER FOR OTP GROUP PRIVACY
+    Transforms: "8801712345678" -> "88017•••5678"
+    """
+    s = str(num_str).replace("+", "")
+    length = len(s)
+    if length > 8:
+        return s[:5] + "•••" + s[-4:]
+    elif length > 5:
+        return s[:3] + "•••" + s[-2:]
+    return s
+
 
 # ==============================================================================
 # 🔐 ULTIMATE DUAL-API AUTHENTICATION & REQUEST WRAPPER
@@ -216,7 +228,7 @@ async def stex_api_request(method, url, json_payload=None):
             if method.upper() == 'GET': 
                 response = await session.get(url, headers=headers, timeout=15, ssl=False)
             else: 
-                response = await session.post(url, json=json_payload, headers=headers, timeout=15, ssl=False)
+                response = await session.post(url, json_payload=json_payload, headers=headers, timeout=15, ssl=False)
             
             status = response.status
             # 🔥 SUPPRESSING 401, 501, 500 ERRORS INTERNALLY
@@ -654,7 +666,7 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==============================================================================
-# 🚀 GLOBAL OTP POLLER (PARALLEL FETCHING FOR MAXIMUM SPEED)
+# 🚀 GLOBAL OTP POLLER (MULTIPLE OTP SUPPORT ENABLED)
 # ==============================================================================
 
 async def process_found_otp(context, hash_key, api_num, code_only, svc_name, raw_msg):
@@ -669,7 +681,7 @@ async def process_found_otp(context, hash_key, api_num, code_only, svc_name, raw
             BATCH_MSGS[batch_key]['numbers'].remove(full_num)
         await update_dynamic_batch_message(context, chat_id, msg_id, batch_key)
 
-    # SEND OTP TO USER
+    # SEND OTP TO USER (FULL NUMBER VISIBLE IN INBOX)
     user_msg = (
         f"🎉 <b>OTP RECEIVED SUCCESSFULLY!</b> ✨\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -681,13 +693,14 @@ async def process_found_otp(context, hash_key, api_num, code_only, svc_name, raw
     
     asyncio.create_task(context.bot.send_message(chat_id=chat_id, text=user_msg, parse_mode=ParseMode.HTML))
     
-    # 🔥 FORWARD TO OTP GROUP WITH DEVELOPER & BOT LINK (SIDE-BY-SIDE)
+    # 🔥 FORWARD TO OTP GROUP (NUMBER IS MASKED SECURELY)
     clean_raw_msg = clean_message_text(raw_msg)
+    masked_num = mask_phone_number(full_num)
     
     group_msg = (
         f"🔔 <b>Otp Received</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📱 Number - <code>{full_num}</code>\n"
+        f"📱 Number - <code>{masked_num}</code>\n"
         f"🛒 Service - <pre>{html.escape(str(svc_name))}</pre>\n"
         f"🔑 Code - <code>{code_only}</code>\n"
         f"✉️ Full sms - <pre>{html.escape(str(clean_raw_msg))}</pre>"
@@ -714,7 +727,7 @@ async def global_otp_checker_job(context: ContextTypes.DEFAULT_TYPE):
         current_time = time.time()
         expired_keys = []
         
-        # CLEANUP SILENTLY
+        # ⏱️ 20 MINUTE TIMEOUT CLEANUP
         for hash_key, data in list(WAITING_OTPS.items()):
             if current_time - data['time'] > OTP_TIMEOUT_SECONDS: 
                 expired_keys.append(hash_key)
@@ -736,7 +749,6 @@ async def global_otp_checker_job(context: ContextTypes.DEFAULT_TYPE):
         if not WAITING_OTPS: 
             return 
             
-        found_keys = []
         date_str = datetime.datetime.now().strftime("%Y-%m-%d")
 
         # 🔥 PARALLEL FETCHING: FETCHING BOTH INBOXES AT THE EXACT SAME TIME
@@ -748,36 +760,48 @@ async def global_otp_checker_job(context: ContextTypes.DEFAULT_TYPE):
         
         results = await asyncio.gather(stex_task, mk_task, return_exceptions=True)
 
-        # 1. PROCESS SERVER 1 (STEX) RESULTS
+        # 1. PROCESS SERVER 1 (STEX) RESULTS - MULTIPLE OTP SUPPORT
         if isinstance(results[0], tuple):
             stex_status, stex_res = results[0]
             if stex_status == 200 and stex_res:
                 for item in stex_res.get('data', {}).get('numbers', []):
                     if isinstance(item, dict) and item.get('status') == 'success':
                         hash_key = get_hash_key(item.get('number', ''))
-                        if hash_key in WAITING_OTPS and hash_key not in found_keys:
-                            # Use extended message search
+                        if hash_key in WAITING_OTPS:
                             raw_msg = item.get('sms', item.get('full_sms', item.get('text', item.get('message', item.get('otp', 'No Message Provided')))))
-                            await process_found_otp(context, hash_key, item.get('number', ''), extract_code(raw_msg), item.get('full_number', 'Service'), raw_msg)
-                            found_keys.append(hash_key)
+                            code_val = extract_code(raw_msg)
+                            
+                            # 🔥 GENERATES UNIQUE MESSAGE SIGNATURE TO PREVENT SPAMMING SAME CODE
+                            msg_sig = f"{code_val}_{raw_msg[:20]}"
+                            rcv = WAITING_OTPS[hash_key].setdefault('received_codes', set())
+                            
+                            if msg_sig not in rcv:
+                                rcv.add(msg_sig)
+                                await process_found_otp(context, hash_key, item.get('number', ''), code_val, item.get('full_number', 'Service'), raw_msg)
 
-        # 2. PROCESS SERVER 2 (MK NETWORK) RESULTS
+        # 2. PROCESS SERVER 2 (MK NETWORK) RESULTS - MULTIPLE OTP SUPPORT
         if isinstance(results[1], tuple):
             mk_status, mk_res = results[1]
             if mk_status == 200 and mk_res:
                 for item in mk_res.get('data', []):
                     if isinstance(item, dict) and item.get('status') == 'success':
                         hash_key = get_hash_key(item.get('phone_number', ''))
-                        if hash_key in WAITING_OTPS and hash_key not in found_keys:
+                        if hash_key in WAITING_OTPS:
                             raw_msg = item.get('full_sms_list', 'No Message')
                             code_val = item.get('otps', extract_code(raw_msg))
                             if not code_val: 
                                 code_val = extract_code(raw_msg)
-                            await process_found_otp(context, hash_key, item.get('phone_number', ''), code_val, item.get('operator', 'Service'), raw_msg)
-                            found_keys.append(hash_key)
+                                
+                            # 🔥 GENERATES UNIQUE MESSAGE SIGNATURE TO PREVENT SPAMMING SAME CODE
+                            msg_sig = f"{code_val}_{raw_msg[:20]}"
+                            rcv = WAITING_OTPS[hash_key].setdefault('received_codes', set())
+                            
+                            if msg_sig not in rcv:
+                                rcv.add(msg_sig)
+                                await process_found_otp(context, hash_key, item.get('phone_number', ''), code_val, item.get('operator', 'Service'), raw_msg)
 
-        for k in found_keys: 
-            WAITING_OTPS.pop(k, None)
+        # 🔥 WE NO LONGER REMOVE THE NUMBER FROM WAITING_OTPS EARLY! 
+        # THIS ALLOWS THE BOT TO CATCH ALL ADDITIONAL CODES FOR 20 MINUTES!
 
 
 # ==============================================================================
@@ -865,7 +889,8 @@ async def process_number_generation(update: Update, context: ContextTypes.DEFAUL
                 'chat_id': chat_id, 
                 'msg_id': msg.message_id, 
                 'batch_key': batch_key, 
-                'time': time.time()
+                'time': time.time(),
+                'received_codes': set() # 🔥 INITIALIZES TRACKING FOR MULTIPLE OTPS
             }
             
         context.user_data['range'] = range_val 
@@ -881,7 +906,7 @@ async def process_number_generation(update: Update, context: ContextTypes.DEFAUL
 
 
 # ==============================================================================
-# 📋 MENUS & DUAL SERVER SELECTION UI (TELEGRAM & INSTAGRAM ADDED)
+# 📋 MENUS & DUAL SERVER SELECTION UI (TELEGRAM, INSTAGRAM, RANGE GROUP BTN)
 # ==============================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -940,11 +965,11 @@ async def start_category_selection(update: Update, context: ContextTypes.DEFAULT
     context.user_data['server'] = server_id
     server_name = "✨ Server 1" if server_id == 1 else "🚀 Server 2"
     
-    # 🔥 ADDED TELEGRAM AND INSTAGRAM CATEGORIES HERE
+    # 🔥 ADDED TELEGRAM, INSTAGRAM, AND RANGE GROUP LINK HERE
     kb = [
         [InlineKeyboardButton("📘 Facebook", callback_data="cat_facebook"), InlineKeyboardButton("💬 WhatsApp", callback_data="cat_whatsapp")],
         [InlineKeyboardButton("✈️ Telegram", callback_data="cat_telegram"), InlineKeyboardButton("📸 Instagram", callback_data="cat_instagram")],
-        [InlineKeyboardButton("🎯 Custom Range", callback_data="cat_custom")],
+        [InlineKeyboardButton("🎯 Custom Range", callback_data="cat_custom"), InlineKeyboardButton("🔥 Range Group", url="https://t.me/Brother_RangeGroup")],
         [InlineKeyboardButton("🔙 Back to Servers", callback_data="go_main")]
     ]
     txt = (
@@ -1324,7 +1349,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================================================================
 
 async def web_server_handler(request):
-    return web.Response(text="Bot is running perfectly! V28 Enterprise Edition with RAM Caching & Anti-Overlap.")
+    return web.Response(text="Bot is running perfectly! V29 Enterprise Edition with RAM Caching & Anti-Overlap.")
 
 async def start_dummy_server():
     try:
@@ -1366,5 +1391,5 @@ if __name__ == "__main__":
     # Forwarder runs normally
     app.job_queue.run_repeating(auto_range_forwarder_job, interval=60, first=10)
     
-    logger.info("✨ VERSION 28.0 ENTERPRISE (20k CAPACITY + ASYNC DB) STARTED SUCCESSFULLY... ✨")
+    logger.info("✨ VERSION 29.0 ENTERPRISE (MULTIPLE OTPS + MASKING ENABLED) STARTED SUCCESSFULLY... ✨")
     app.run_polling(drop_pending_updates=True)
