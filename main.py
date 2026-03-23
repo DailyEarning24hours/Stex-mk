@@ -1748,6 +1748,8 @@ async def admin_bulk_revoke_cmd(update: Update, context: ContextTypes.DEFAULT_TY
         )
     except Exception:
         await update.message.reply_text("⚠️ Usage: `/bulkrevoke UserID`", parse_mode=ParseMode.Markdown)
+
+async def ban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: return
     try:
         target_id = int(context.args[0])
