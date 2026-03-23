@@ -60,10 +60,10 @@ OTP_GROUP_ID = -1003860012419
 # 🌐 SERVER 1 CREDENTIALS
 STEX_EMAIL = "mujahidhasan619@gmail.com"
 STEX_PASSWORD = "hasan2008"
-API_LOGIN = "https://stexsms.com/mapi/v1/mauth/login"
-API_CONSOLE = "https://stexsms.com/mapi/v1/mdashboard/console/info"
-API_GET_NUM = "https://stexsms.com/mapi/v1/mdashboard/getnum/number"
-API_INBOX = "https://stexsms.com/mapi/v1/mdashboard/getnum/info"
+API_STEX_LOGIN = "https://stexsms.com/mapi/v1/mauth/login"
+API_STEX_CONSOLE = "https://stexsms.com/mapi/v1/mdashboard/console/info"
+API_STEX_GET_NUM = "https://stexsms.com/mapi/v1/mdashboard/getnum/number"
+API_STEX_INBOX = "https://stexsms.com/mapi/v1/mdashboard/getnum/info"
 
 # 🚀 SERVER 2 CREDENTIALS
 MK_EMAIL = "mujahidhasan619@gmail.com"
@@ -178,7 +178,7 @@ async def authenticate_stex(force=False):
         }
         try:
             session = await get_session()
-            async with session.post(API_LOGIN, json=payload, headers=headers, timeout=15, ssl=False) as response:
+            async with session.post(API_STEX_LOGIN, json=payload, headers=headers, timeout=15, ssl=False) as response:
                 if response.status == 200:
                     data = await parse_response_safely(response)
                     if data and str(data.get('meta', {}).get('code')) == '200':
@@ -315,13 +315,13 @@ def init_db():
             join_date TEXT,
             is_banned INTEGER DEFAULT 0
         )''')
-        # 🔥 BULK BUY APPROVAL TABLE — Tracks who is approved for bulk buying
+        # 🔥 BULK BUY: approved users table
         c.execute('''CREATE TABLE IF NOT EXISTS bulk_approved (
             user_id INTEGER PRIMARY KEY,
             approved_by INTEGER,
             approved_at TEXT
         )''')
-        # 🔥 BULK BUY REQUESTS TABLE — Tracks pending requests from users
+        # 🔥 BULK BUY: pending requests table
         c.execute('''CREATE TABLE IF NOT EXISTS bulk_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -383,7 +383,7 @@ def set_ban_status(user_id, status):
 # ==============================================================================
 
 def is_bulk_approved(user_id):
-    """Check if a user is approved for bulk number buying."""
+    """Admin is always approved. Others checked in DB."""
     if user_id in ADMIN_IDS:
         return True
     with db_pool.get_connection() as conn:
@@ -392,51 +392,34 @@ def is_bulk_approved(user_id):
         return c.fetchone() is not None
 
 def approve_bulk_user(user_id, admin_id):
-    """Admin approves a user for bulk buying."""
     with db_pool.get_connection() as conn:
         c = conn.cursor()
-        c.execute(
-            "INSERT OR REPLACE INTO bulk_approved (user_id, approved_by, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
-            (user_id, admin_id)
-        )
+        c.execute("INSERT OR REPLACE INTO bulk_approved (user_id, approved_by, approved_at) VALUES (?, ?, CURRENT_TIMESTAMP)", (user_id, admin_id))
         conn.commit()
 
 def revoke_bulk_user(user_id):
-    """Admin revokes bulk buy permission from a user."""
     with db_pool.get_connection() as conn:
         c = conn.cursor()
         c.execute("DELETE FROM bulk_approved WHERE user_id=?", (user_id,))
         conn.commit()
 
 def add_bulk_request(user_id, username):
-    """Store a user's bulk buy request. Returns request id."""
+    """Returns (request_id, is_new). is_new=False if already pending."""
     with db_pool.get_connection() as conn:
         c = conn.cursor()
-        # Check if already pending
         c.execute("SELECT id FROM bulk_requests WHERE user_id=? AND status='pending'", (user_id,))
         existing = c.fetchone()
         if existing:
             return existing[0], False
-        c.execute(
-            "INSERT INTO bulk_requests (user_id, username, requested_at, status) VALUES (?, ?, CURRENT_TIMESTAMP, 'pending')",
-            (user_id, username or 'Unknown')
-        )
+        c.execute("INSERT INTO bulk_requests (user_id, username, requested_at, status) VALUES (?, ?, CURRENT_TIMESTAMP, 'pending')", (user_id, username or 'Unknown'))
         conn.commit()
         return c.lastrowid, True
 
 def update_bulk_request_status(request_id, status):
-    """Update bulk request status: pending/approved/rejected."""
     with db_pool.get_connection() as conn:
         c = conn.cursor()
         c.execute("UPDATE bulk_requests SET status=? WHERE id=?", (status, request_id))
         conn.commit()
-
-def get_bulk_request_by_id(request_id):
-    """Get a bulk request row by id."""
-    with db_pool.get_connection() as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM bulk_requests WHERE id=?", (request_id,))
-        return c.fetchone()
 
 
 # ==============================================================================
@@ -497,37 +480,25 @@ def get_flag(country_name):
 def extract_code(message):
     """
     🔥 ADVANCED OTP EXTRACTOR — HANDLES ALL FORMATS:
-    Standard: 123456
-    Instagram/WhatsApp hyphen format: 123-456  → returns 123456
-    Space-separated: 123 456 → returns 123456
-    6-digit: 654321, 4-digit: 9876
+    Standard: 123456 | Hyphen: 123-456 (Instagram/WhatsApp) | Space: 123 456
     """
     text = str(message)
-    
-    # 🔥 FORMAT 1: Hyphen-separated like 123-456 or 12-3456 (Instagram, WhatsApp style)
+    # FORMAT 1: Hyphen-separated like 123-456 (Instagram, WhatsApp)
     hyphen_match = re.search(r'\b(\d{3,4})-(\d{3,4})\b', text)
     if hyphen_match:
         combined = hyphen_match.group(1) + hyphen_match.group(2)
         if 4 <= len(combined) <= 8:
             return combined
-    
-    # 🔥 FORMAT 2: Space-separated like "123 456" (some services)
+    # FORMAT 2: Space-separated like "123 456"
     space_match = re.search(r'\b(\d{3,4})\s(\d{3,4})\b', text)
     if space_match:
         combined = space_match.group(1) + space_match.group(2)
         if 4 <= len(combined) <= 8:
             return combined
-    
-    # 🔥 FORMAT 3: Standard continuous digits 4-8 chars
+    # FORMAT 3: Standard continuous 4-8 digits
     std_match = re.search(r'\b(\d{4,8})\b', text)
     if std_match:
         return std_match.group(0)
-    
-    # 🔥 FORMAT 4: Any digit group as last resort
-    any_match = re.search(r'(\d{3,8})', text)
-    if any_match:
-        return any_match.group(0)
-    
     return "See Msg"
 
 
@@ -635,12 +606,12 @@ async def update_dynamic_batch_message(context, chat_id, msg_id, batch_key):
 
 async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
     global SENT_RANGES
-    # 🔥 Only forwarding Facebook & Whatsapp to Range Group
-    allowed_apps = ['facebook', 'whatsapp', 'instagram']
+    # 🔥 Forwarding Facebook, Whatsapp, Instagram, Telegram to Range Group
+    allowed_apps = ['facebook', 'whatsapp', 'instagram', 'telegram']
     bot_username = context.bot.username
 
     # Fetch both consoles simultaneously for speed
-    stex_task = stex_api_request('GET', API_CONSOLE)
+    stex_task = stex_api_request('GET', API_STEX_CONSOLE)
     mk_task = mk_api_request('GET', API_MK_CONSOLE)
     
     results = await asyncio.gather(stex_task, mk_task, return_exceptions=True)
@@ -650,7 +621,7 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
         stex_status, stex_data = results[0]
         if stex_status == 200 and isinstance(stex_data, dict):
             logs = stex_data.get('data', {}).get('logs', [])
-            # 🔥 Process more logs (up to 15) for better range coverage
+            # 🔥 Check up to 15 logs for better coverage
             for log in logs[:15]:
                 if isinstance(log, dict):
                     r_val = log.get('range')
@@ -659,20 +630,19 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
                     msg_text = str(log.get('message', ''))
                     
                     if any(app in raw_app for app in allowed_apps) and r_val:
-                        # 🔥 MULTI-RANGE FIX: Use range+code signature so same range
-                        # can be forwarded again when a new/different code arrives
+                        # 🔥 MULTI-RANGE FIX: unique sig per OTP so same range
+                        # forwards again when a new code arrives
                         raw_msg = log.get('sms', log.get('full_sms', log.get('text', log.get('message', log.get('msg', log.get('otp', 'No Message Provided'))))))
                         full_msg_text = clean_message_text(raw_msg)
-                        code_in_msg = extract_code(raw_msg)
-                        # Signature = range + first 30 chars of message (unique per OTP)
-                        range_sig = f"{r_val}_{code_in_msg}_{raw_msg[:30]}"
+                        code_sig = extract_code(raw_msg)
+                        range_sig = f"{r_val}_{code_sig}_{str(raw_msg)[:25]}"
                         
                         if range_sig not in SENT_RANGES:
                             SENT_RANGES.add(range_sig)
                             if len(SENT_RANGES) > 10000: SENT_RANGES.clear()
-                        
+                            
                             display_app = "PC Clone" if ('facebook' in raw_app and '******' in msg_text) else log.get('app_name', 'Unknown').title()
-                        
+                            
                             range_msg = (
                                 f"🔥 <b>New Range find</b>\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -693,7 +663,7 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
         mk_status, mk_data = results[1]
         if mk_status == 200 and isinstance(mk_data, dict):
             feeds = mk_data.get('feed', [])
-            # 🔥 Process more logs (up to 20) — MK Network sends more data
+            # 🔥 Check up to 20 logs — MK Network sends more data
             for log in feeds[:20]:
                 if isinstance(log, dict):
                     r_val = log.get('range')
@@ -702,18 +672,18 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
                     msg_text = str(log.get('msg', ''))
                     
                     if any(app in raw_app for app in allowed_apps) and r_val:
-                        # 🔥 MULTI-RANGE FIX: Unique signature per OTP message
+                        # 🔥 MULTI-RANGE FIX: unique sig per OTP
                         raw_msg = log.get('full_sms', log.get('sms', log.get('text', log.get('msg', log.get('message', log.get('otp', 'No Message Provided'))))))
                         full_msg_text = clean_message_text(raw_msg)
-                        code_in_msg = extract_code(raw_msg)
-                        range_sig = f"{r_val}_{code_in_msg}_{raw_msg[:30]}"
+                        code_sig = extract_code(raw_msg)
+                        range_sig = f"{r_val}_{code_sig}_{str(raw_msg)[:25]}"
                         
                         if range_sig not in SENT_RANGES:
                             SENT_RANGES.add(range_sig)
                             if len(SENT_RANGES) > 10000: SENT_RANGES.clear()
-                        
+                            
                             display_app = "PC Clone" if ('facebook' in raw_app and '******' in msg_text) else log.get('service_name', 'Unknown').title()
-                        
+                            
                             range_msg = (
                                 f"🔥 <b>New Range find</b>\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -809,7 +779,7 @@ async def global_otp_checker_job(context: ContextTypes.DEFAULT_TYPE):
     date_str = datetime.datetime.now().strftime("%Y-%m-%d")
 
     # 🔥 PARALLEL FETCHING: FETCHING BOTH INBOXES AT THE EXACT SAME TIME
-    stex_url = f"{API_INBOX}?date={date_str}&page=1&search=&status="
+    stex_url = f"{API_STEX_INBOX}?date={date_str}&page=1&search=&status="
     mk_url = API_MK_INBOX.format(date_str)
     
     stex_task = stex_api_request('GET', stex_url)
@@ -890,7 +860,7 @@ async def process_number_generation(update: Update, context: ContextTypes.DEFAUL
         
         if server_id == 1: 
             payload = {"range": range_val, "is_national": False, "remove_plus": False}
-            status, resp = await stex_api_request('POST', API_GET_NUM, json_payload=payload)
+            status, resp = await stex_api_request('POST', API_STEX_GET_NUM, json_payload=payload)
             if status == 200 and isinstance(resp, dict) and 'data' in resp and resp['data'].get('number'):
                 fetched_numbers.append(resp['data']['number'])
                 country_name = resp['data'].get('country', country_name)
@@ -1015,11 +985,11 @@ async def show_server_selection(update_obj, context):
 async def start_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, server_id):
     context.user_data['server'] = server_id
     server_name = "✨ Server 1" if server_id == 1 else "🚀 Server 2"
-    user_id = update.effective_user.id
     
-    # 🔥 CATEGORIES CLEANED (Only FB, WA, Custom + Bulk Buy)
+    # 🔥 CATEGORIES: FB, WA, Custom + Bulk Buy
     kb = [
         [InlineKeyboardButton("📘 Facebook", callback_data="cat_facebook"), InlineKeyboardButton("💬 WhatsApp", callback_data="cat_whatsapp")],
+        [InlineKeyboardButton("📸 Instagram", callback_data="cat_instagram"), InlineKeyboardButton("✈️ Telegram", callback_data="cat_telegram")],
         [InlineKeyboardButton("🎯 Custom Range", callback_data="cat_custom")],
         [InlineKeyboardButton("📦 Bulk Number Buy", callback_data="cat_bulk")],
         [InlineKeyboardButton("🔙 Back to Servers", callback_data="go_main")]
@@ -1034,24 +1004,27 @@ async def start_category_selection(update: Update, context: ContextTypes.DEFAULT
     else: 
         await update.message.reply_text(text=txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
 
-async def handle_bulk_service_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show country list for bulk buy after service (Facebook) is selected."""
+# ==============================================================================
+# 📦 BULK BUY FLOW FUNCTIONS
+# ==============================================================================
+
+async def show_bulk_countries(update: Update, context: ContextTypes.DEFAULT_TYPE, service: str):
+    """Show country list for bulk buy."""
     query = update.callback_query
     user_id = query.from_user.id
     server_id = context.user_data.get('server', 1)
-    service = query.data.split('_')[2]  # e.g. 'facebook'
     context.user_data['bulk_service'] = service
-    
+
     if not is_bulk_approved(user_id):
         await query.answer("🔒 Not approved for bulk buy.", show_alert=True)
         return
-    
-    await query.edit_message_text(text="📡 <i>Loading available countries...</i> ⏳", parse_mode=ParseMode.HTML)
+
+    await query.edit_message_text(text="📡 <i>Loading countries...</i> ⏳", parse_mode=ParseMode.HTML)
     countries = {}
-    
+
     if server_id == 1:
         await authenticate_stex(force=True)
-        status, data = await stex_api_request('GET', API_CONSOLE)
+        status, data = await stex_api_request('GET', API_STEX_CONSOLE)
         if status == 200 and isinstance(data, dict):
             for log in data.get('data', {}).get('logs', []):
                 if isinstance(log, dict) and service in str(log.get('app_name', '')).lower():
@@ -1067,7 +1040,7 @@ async def handle_bulk_service_click(update: Update, context: ContextTypes.DEFAUL
                     c, r = log.get('country'), log.get('range')
                     if c and r and c not in countries:
                         countries[c] = r
-    
+
     if not countries:
         await query.edit_message_text(
             text="📡 <b>No countries found right now.</b>\n<i>Please try again in a moment.</i>",
@@ -1075,37 +1048,37 @@ async def handle_bulk_service_click(update: Update, context: ContextTypes.DEFAUL
             parse_mode=ParseMode.HTML
         )
         return
-    
+
     kb = []
     for c_name, r_val in countries.items():
         kb.append([InlineKeyboardButton(f"{get_flag(c_name)} {c_name}", callback_data=f"bulkc_{server_id}_{r_val}_{c_name[:15]}")])
     kb.append([InlineKeyboardButton("🔙 Back", callback_data=f"srv_{server_id}")])
-    
+
     await query.edit_message_text(
         text=f"🌍 <b>SELECT COUNTRY FOR BULK BUY ({service.title()})</b>\n━━━━━━━━━━━━━━━━━━━━",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode=ParseMode.HTML
     )
 
-async def handle_bulk_country_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """After country selected for bulk, ask how many numbers (max 100)."""
+async def show_bulk_qty_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """After country selected, ask quantity."""
     query = update.callback_query
     user_id = query.from_user.id
-    
+
     if not is_bulk_approved(user_id):
-        await query.answer("🔒 Not approved for bulk buy.", show_alert=True)
+        await query.answer("🔒 Not approved.", show_alert=True)
         return
-    
-    parts = query.data.split('_')  # bulkc_serverid_range_country
+
+    parts = query.data.split('_')   # bulkc_serverid_range_country
     server_id = int(parts[1])
     range_val = parts[2]
     country_name = parts[3] if len(parts) > 3 else "Unknown"
-    
+
     context.user_data['bulk_range'] = range_val
     context.user_data['bulk_server'] = server_id
     context.user_data['bulk_country'] = country_name
     context.user_data['state'] = 'WAITING_FOR_BULK_QTY'
-    
+
     await query.edit_message_text(
         text=(
             f"📦 <b>BULK NUMBER BUY</b>\n"
@@ -1119,35 +1092,30 @@ async def handle_bulk_country_click(update: Update, context: ContextTypes.DEFAUL
     )
 
 async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, qty: int):
-    """Fetch bulk numbers and deliver to user."""
-    user_id = update.effective_user.id
+    """Fetch bulk numbers and deliver."""
     chat_id = update.effective_chat.id
-    
     range_val = context.user_data.get('bulk_range', '')
     server_id = context.user_data.get('bulk_server', 1)
     country_name = context.user_data.get('bulk_country', 'Unknown')
-    
+
     if not range_val:
         await update.message.reply_text("⚠️ <b>Session expired. Please start again.</b>", parse_mode=ParseMode.HTML)
         return
-    
+
     if not range_val.upper().endswith("XXX"):
         range_val += "XXX"
-    
-    msg = await update.message.reply_text(
-        f"⏳ <i>Fetching {qty} numbers... Please wait.</i> 🚀",
-        parse_mode=ParseMode.HTML
-    )
-    
+
+    msg = await update.message.reply_text(f"⏳ <i>Fetching {qty} numbers... Please wait.</i> 🚀", parse_mode=ParseMode.HTML)
+
     fetched = []
     failed = 0
-    
+
     for i in range(qty):
-        await asyncio.sleep(0.3)  # Small delay to avoid rate limiting
+        await asyncio.sleep(0.3)
         try:
             if server_id == 1:
                 payload = {"range": range_val, "is_national": False, "remove_plus": False}
-                status, resp = await stex_api_request('POST', API_GET_NUM, json_payload=payload)
+                status, resp = await stex_api_request('POST', API_STEX_GET_NUM, json_payload=payload)
                 if status == 200 and isinstance(resp, dict) and resp.get('data', {}).get('number'):
                     fetched.append(resp['data']['number'])
                 else:
@@ -1163,17 +1131,14 @@ async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, q
                     failed += 1
         except Exception:
             failed += 1
-        
-        # Progress update every 10 numbers
+
+        # Progress every 10
         if (i + 1) % 10 == 0 or (i + 1) == qty:
             try:
-                await msg.edit_text(
-                    f"⏳ <i>Progress: {i+1}/{qty} — Got {len(fetched)} numbers so far...</i>",
-                    parse_mode=ParseMode.HTML
-                )
+                await msg.edit_text(f"⏳ <i>Progress: {i+1}/{qty} — Got {len(fetched)} numbers...</i>", parse_mode=ParseMode.HTML)
             except Exception:
                 pass
-    
+
     if not fetched:
         await msg.edit_text(
             "❌ <b>Failed to fetch any numbers.</b>\n<i>Server may be busy. Please try again.</i>",
@@ -1181,57 +1146,56 @@ async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             parse_mode=ParseMode.HTML
         )
         return
-    
+
     flag = get_flag(country_name)
-    
-    # Split numbers into chunks of 20 for readability
-    chunk_size = 20
-    chunks = [fetched[i:i+chunk_size] for i in range(0, len(fetched), chunk_size)]
-    
-    # Delete progress message
     try:
         await msg.delete()
     except Exception:
         pass
-    
-    # Send summary first
-    summary_txt = (
-        f"✅ <b>BULK BUY COMPLETE!</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🌍 <b>{flag} {country_name}</b>\n"
-        f"📦 <b>Requested:</b> {qty} | <b>Received:</b> {len(fetched)} | <b>Failed:</b> {failed}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>Numbers are listed below in chunks of {chunk_size}:</i>"
+
+    # Summary
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"✅ <b>BULK BUY COMPLETE!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🌍 <b>{flag} {country_name}</b>\n"
+            f"📦 Requested: {qty} | Received: {len(fetched)} | Failed: {failed}\n"
+            f"━━━━━━━━━━━━━━━━━━━━"
+        ),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Server", callback_data="go_main")]]),
+        parse_mode=ParseMode.HTML
     )
-    kb = [[InlineKeyboardButton("🔙 Back to Server", callback_data="go_main")]]
-    await context.bot.send_message(chat_id=chat_id, text=summary_txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-    
-    # Send numbers in chunks
+
+    # Send numbers in chunks of 20
+    chunks = [fetched[i:i+20] for i in range(0, len(fetched), 20)]
     for idx, chunk in enumerate(chunks):
         nums_text = "\n".join([f"<code>{n}</code>" for n in chunk])
-        chunk_msg = (
-            f"📋 <b>Chunk {idx+1}/{len(chunks)}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{nums_text}"
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📋 <b>Chunk {idx+1}/{len(chunks)}</b>\n━━━━━━━━━━━━━━━━━━━━\n{nums_text}",
+            parse_mode=ParseMode.HTML
         )
-        await context.bot.send_message(chat_id=chat_id, text=chunk_msg, parse_mode=ParseMode.HTML)
         await asyncio.sleep(0.2)
-    
+
     context.user_data['state'] = None
     context.user_data['bulk_range'] = None
+
+
+async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     category = query.data.split('_')[1].lower()
     server_id = context.user_data.get('server', 1)
-    user_id = query.from_user.id
     
-    # ─────────────────────────────────────────────────────
-    # 📦 BULK NUMBER BUY — ADMIN ONLY (USER GETS REQUEST FLOW)
-    # ─────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────
+    # 📦 BULK NUMBER BUY
+    # ─────────────────────────────────────────────
     if category == 'bulk':
-        if is_bulk_approved(user_id):
-            # Admin or approved user → Show service selection for bulk
-            kb = [
-                [InlineKeyboardButton("📘 Facebook (Bulk)", callback_data="bulk_svc_facebook")],
+        user_id_check = query.from_user.id
+        if is_bulk_approved(user_id_check):
+            # Approved: show service selection
+            kb_bulk = [
+                [InlineKeyboardButton("📘 Facebook (Bulk)", callback_data="bulksvc_facebook")],
                 [InlineKeyboardButton("🔙 Back to Categories", callback_data=f"srv_{server_id}")]
             ]
             await query.edit_message_text(
@@ -1239,14 +1203,14 @@ async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, q
                     "📦 <b>BULK NUMBER BUY</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     "✅ <i>You are approved for bulk buying!</i>\n\n"
-                    "🛒 <b>Select a service to bulk buy numbers:</b>"
+                    "🛒 <b>Select a service:</b>"
                 ),
-                reply_markup=InlineKeyboardMarkup(kb),
+                reply_markup=InlineKeyboardMarkup(kb_bulk),
                 parse_mode=ParseMode.HTML
             )
         else:
-            # Regular user → Show "Not Available" with Request button
-            kb = [
+            # Not approved: show request button
+            kb_bulk = [
                 [InlineKeyboardButton("📩 Request For This", callback_data="bulk_request")],
                 [InlineKeyboardButton("🔙 Back to Categories", callback_data=f"srv_{server_id}")]
             ]
@@ -1255,14 +1219,14 @@ async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, q
                     "📦 <b>BULK NUMBER BUY</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     "🔒 <b>Not Available</b>\n\n"
-                    "<i>This feature is only available for approved users.\n"
-                    "You can send a request to the admin for approval.</i>"
+                    "<i>This feature is only for approved users.\n"
+                    "Send a request to the admin for approval.</i>"
                 ),
-                reply_markup=InlineKeyboardMarkup(kb),
+                reply_markup=InlineKeyboardMarkup(kb_bulk),
                 parse_mode=ParseMode.HTML
             )
         return
-    
+
     if category == 'custom':
         await query.edit_message_text(
             text="🎯 <b>CUSTOM RANGE GENERATOR</b>\n━━━━━━━━━━━━━━━━━━━━\n✏️ <i>Type your custom range below.</i>\n💡 <b>Ex:</b> <code>88017XXX</code>", 
@@ -1276,7 +1240,7 @@ async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, q
 
     if server_id == 1:
         await authenticate_stex(force=True)
-        status, data = await stex_api_request('GET', API_CONSOLE)
+        status, data = await stex_api_request('GET', API_STEX_CONSOLE)
         if status == 200 and isinstance(data, dict):
             for log in data.get('data', {}).get('logs', []):
                 if isinstance(log, dict) and category in str(log.get('app_name', '')).lower():
@@ -1423,9 +1387,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data['state'] = None
         server_id = user_data.get('server', 1)
         await process_number_generation(update, context, text, server_id, is_callback=False)
-    
+
     elif user_data.get('state') == 'WAITING_FOR_BULK_QTY':
-        # 🔥 BULK BUY QUANTITY INPUT HANDLER
+        # 🔥 BULK BUY QUANTITY INPUT
         if not is_bulk_approved(user_id):
             await update.message.reply_text("🔒 <b>You are not approved for bulk buy.</b>", parse_mode=ParseMode.HTML)
             user_data['state'] = None
@@ -1434,17 +1398,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             qty = int(text.strip())
             if qty < 1 or qty > 100:
                 await update.message.reply_text(
-                    "⚠️ <b>Invalid quantity!</b>\n<i>Please enter a number between 1 and 100.</i>",
+                    "⚠️ <b>Invalid quantity!</b>\n<i>Enter a number between 1 and 100.</i>",
                     parse_mode=ParseMode.HTML
                 )
                 return
             user_data['state'] = None
             await process_bulk_buy(update, context, qty)
         except ValueError:
-            await update.message.reply_text(
-                "⚠️ <b>Please enter a valid number (e.g. 10, 50, 100)</b>",
-                parse_mode=ParseMode.HTML
-            )
+            await update.message.reply_text("⚠️ <b>Please enter a valid number (e.g. 10, 50, 100)</b>", parse_mode=ParseMode.HTML)
         
     else:
         await show_main_menu(update, context)
@@ -1497,17 +1458,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     elif data == "go_main": 
         await show_server_selection(update, context)
-        
-    # 🔥 BULK BUY REQUEST FROM USER (NOT APPROVED)
+
+    # 🔥 BULK BUY: User requests access
     elif data == "bulk_request":
         username = query.from_user.username or query.from_user.first_name or "Unknown"
         req_id, is_new = add_bulk_request(user_id, username)
-        
         if not is_new:
             await query.answer("⏳ Your request is already pending. Please wait for admin approval.", show_alert=True)
             return
-        
-        # Notify admin(s)
         for a_id in ADMIN_IDS:
             try:
                 admin_kb = [
@@ -1531,18 +1489,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
-        
         await query.edit_message_text(
             text=(
                 "📩 <b>Request Sent!</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 "✅ <i>Your bulk buy request has been sent to the admin.\n"
-                "You will be notified when it is approved or rejected.</i>"
+                "You will be notified when approved.</i>"
             ),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Server", callback_data="go_main")]]),
             parse_mode=ParseMode.HTML
         )
-    
+
     # 🔥 ADMIN APPROVES BULK REQUEST
     elif data.startswith("bkapprove_"):
         if user_id not in ADMIN_IDS:
@@ -1559,18 +1516,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=(
                     "🎉 <b>Bulk Buy Approved!</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    "✅ <i>Your bulk number buy request has been approved by the admin!\n"
+                    "✅ <i>Your request was approved!\n"
                     "You can now use 📦 Bulk Number Buy from the categories menu.</i>"
                 ),
                 parse_mode=ParseMode.HTML
             )
         except Exception:
             pass
-        await query.edit_message_text(
-            f"✅ <b>Approved!</b> User <code>{target_uid}</code> can now use Bulk Buy.",
-            parse_mode=ParseMode.HTML
-        )
-    
+        await query.edit_message_text(f"✅ <b>Approved!</b> User <code>{target_uid}</code> can now use Bulk Buy.", parse_mode=ParseMode.HTML)
+
     # 🔥 ADMIN REJECTS BULK REQUEST
     elif data.startswith("bkreject_"):
         if user_id not in ADMIN_IDS:
@@ -1586,26 +1540,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=(
                     "❌ <b>Bulk Buy Request Rejected</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    "<i>Unfortunately, your bulk number buy request was rejected by the admin.\n"
+                    "<i>Your request was rejected by the admin.\n"
                     "Contact support if you think this is a mistake.</i>"
                 ),
                 parse_mode=ParseMode.HTML
             )
         except Exception:
             pass
-        await query.edit_message_text(
-            f"❌ <b>Rejected.</b> Request from user <code>{target_uid}</code> has been rejected.",
-            parse_mode=ParseMode.HTML
-        )
-    
+        await query.edit_message_text(f"❌ <b>Rejected.</b> Request from <code>{target_uid}</code> rejected.", parse_mode=ParseMode.HTML)
+
     # 🔥 BULK SERVICE SELECTED (e.g. Facebook)
-    elif data.startswith("bulk_svc_"):
-        await handle_bulk_service_click(update, context)
-    
+    elif data.startswith("bulksvc_"):
+        service = data.split("_")[1]
+        await show_bulk_countries(update, context, service)
+
     # 🔥 BULK COUNTRY SELECTED
     elif data.startswith("bulkc_"):
-        await handle_bulk_country_click(update, context)
-        
+        await show_bulk_qty_prompt(update, context)
+
     # 🔥 INLINE ADMIN REPLY BUTTON HANDLER
     elif data.startswith("admrep_"):
         if user_id not in ADMIN_IDS:
@@ -1711,24 +1663,15 @@ async def admin_backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ <b>Database file not found!</b>", parse_mode=ParseMode.HTML)
 
 async def admin_bulk_approve_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command: /bulkapprove <user_id>"""
     if update.effective_user.id not in ADMIN_IDS: return
     try:
         target_id = int(context.args[0])
         approve_bulk_user(target_id, update.effective_user.id)
-        await update.message.reply_text(
-            f"✅ User <code>{target_id}</code> has been <b>approved for Bulk Buy</b>.",
-            parse_mode=ParseMode.HTML
-        )
+        await update.message.reply_text(f"✅ User <code>{target_id}</code> approved for <b>Bulk Buy</b>.", parse_mode=ParseMode.HTML)
         try:
             await context.bot.send_message(
                 chat_id=target_id,
-                text=(
-                    "🎉 <b>Bulk Buy Approved!</b>\n"
-                    "━━━━━━━━━━━━━━━━━━━━\n"
-                    "✅ <i>You have been approved by the admin for Bulk Number Buy!\n"
-                    "You can now use 📦 Bulk Number Buy from the categories menu.</i>"
-                ),
+                text="🎉 <b>Bulk Buy Approved!</b>\n━━━━━━━━━━━━━━━━━━━━\n✅ <i>You can now use 📦 Bulk Number Buy from categories menu.</i>",
                 parse_mode=ParseMode.HTML
             )
         except Exception:
@@ -1737,15 +1680,11 @@ async def admin_bulk_approve_cmd(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("⚠️ Usage: `/bulkapprove UserID`", parse_mode=ParseMode.Markdown)
 
 async def admin_bulk_revoke_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command: /bulkrevoke <user_id>"""
     if update.effective_user.id not in ADMIN_IDS: return
     try:
         target_id = int(context.args[0])
         revoke_bulk_user(target_id)
-        await update.message.reply_text(
-            f"🚫 Bulk Buy permission <b>revoked</b> for user <code>{target_id}</code>.",
-            parse_mode=ParseMode.HTML
-        )
+        await update.message.reply_text(f"🚫 Bulk Buy permission <b>revoked</b> for <code>{target_id}</code>.", parse_mode=ParseMode.HTML)
     except Exception:
         await update.message.reply_text("⚠️ Usage: `/bulkrevoke UserID`", parse_mode=ParseMode.Markdown)
 
@@ -1833,8 +1772,8 @@ if __name__ == "__main__":
     # 🔥 EXTREME SPEED POLLING SYSTEM (Runs every 4 seconds now)
     app.job_queue.run_repeating(global_otp_checker_job, interval=4, first=2)
     
-    # 🔥 RANGE FORWARDER — Reduced to 20s for much faster range detection
-    # Server 2 was missing ranges at 60s interval, 20s fixes this
+    # Forwarder runs normally
+    # 🔥 RANGE FORWARDER — 20s interval for fast Server 2 range detection
     app.job_queue.run_repeating(auto_range_forwarder_job, interval=20, first=10)
     
     logger.info("✨ VERSION 23.0 ENTERPRISE (PARALLEL PROCESSING) STARTED SUCCESSFULLY... ✨")
