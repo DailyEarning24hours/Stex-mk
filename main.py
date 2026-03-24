@@ -740,7 +740,7 @@ async def process_found_otp(context, hash_key, api_num, code_only, svc_name, raw
         f"🔑 Code - <code>{code_only}</code>\n"
         f"✉️ Full sms - <pre>{html.escape(str(clean_raw_msg))}</pre>"
     )
-    group_kb = [[InlineKeyboardButton("👨‍💻 Owner", url="https://t.me/Brother_United_Team")]]
+    group_kb = [[InlineKeyboardButton("🤖 Bot Link", url=f"https://t.me/{context.bot.username}"), InlineKeyboardButton("👨‍💻 Developer", url="https://t.me/RTx2R")]]
     try: 
         asyncio.create_task(context.bot.send_message(chat_id=OTP_GROUP_ID, text=group_msg, reply_markup=InlineKeyboardMarkup(group_kb), parse_mode=ParseMode.HTML))
     except Exception: 
@@ -1093,8 +1093,9 @@ async def show_bulk_qty_prompt(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, qty: int):
     """
-    🔥 BULK BUY: Fetch numbers, show all in ONE copyable block,
+    🔥 BULK BUY: Fetch numbers, send as .txt file (each number on new line),
     then register all in WAITING_OTPS for 20 min OTP listening.
+    OTPs delivered one by one as they arrive.
     """
     global WAITING_OTPS, BATCH_MSGS
     user_id = update.effective_user.id
@@ -1160,15 +1161,14 @@ async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, q
     except Exception:
         pass
 
-    # 🔥 ALL NUMBERS IN ONE SINGLE <code> BLOCK — 1 click to copy all
-    # Numbers on one line separated by space for easy copy
-    all_nums_line = " ".join(fetched)
+    # 🔥 BUILD .TXT FILE — each number on its own line
+    txt_content = "\n".join(fetched)
+    txt_bytes = txt_content.encode('utf-8')
+    import io
+    txt_file = io.BytesIO(txt_bytes)
+    txt_file.name = f"bulk_numbers_{range_val.replace('XXX','')}.txt"
 
-    # Split into chunks of 50 numbers per message to avoid Telegram limit
-    chunk_size = 50
-    num_chunks = [fetched[i:i+chunk_size] for i in range(0, len(fetched), chunk_size)]
-
-    # Summary message
+    # Summary message first
     summary_msg = await context.bot.send_message(
         chat_id=chat_id,
         text=(
@@ -1177,24 +1177,29 @@ async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             f"🌍 <b>{flag} {country_name}</b>\n"
             f"📦 Requested: <b>{qty}</b> | Received: <b>{len(fetched)}</b> | Failed: <b>{failed}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"⏳ <i>Waiting for OTPs... (20 min)</i>"
+            f"⏳ <i>Waiting for codes... (20 min)</i>\n"
+            f"<i>OTPs will be sent one by one as they arrive.</i>"
         ),
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Server", callback_data="go_main")]]),
         parse_mode=ParseMode.HTML
     )
 
-    # 🔥 Send numbers — each chunk as ONE copyable code block (1 click copy)
-    for idx, chunk in enumerate(num_chunks):
-        one_line = " ".join(chunk)
-        chunk_label = f"📋 <b>Numbers {idx*chunk_size+1}–{idx*chunk_size+len(chunk)}</b> (tap to copy all):\n"
-        await context.bot.send_message(
+    # 🔥 SEND .TXT FILE with all numbers (each on new line)
+    try:
+        txt_file.seek(0)
+        await context.bot.send_document(
             chat_id=chat_id,
-            text=f"{chunk_label}<code>{one_line}</code>",
+            document=InputFile(txt_file, filename=txt_file.name),
+            caption=(
+                f"📄 <b>Your {len(fetched)} Numbers</b>\n"
+                f"<i>Each number on a separate line.</i>"
+            ),
             parse_mode=ParseMode.HTML
         )
-        await asyncio.sleep(0.15)
+    except Exception as e:
+        logger.error(f"Bulk txt send error: {e}")
 
-    # 🔥 REGISTER ALL FETCHED NUMBERS IN WAITING_OTPS FOR OTP LISTENING (20 MIN)
+    # 🔥 REGISTER ALL NUMBERS IN WAITING_OTPS FOR OTP LISTENING (20 MIN)
     bulk_batch_key = f"bulk_{chat_id}_{summary_msg.message_id}"
     BATCH_MSGS[bulk_batch_key] = {
         'numbers': fetched.copy(),
@@ -1211,7 +1216,7 @@ async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             'msg_id': summary_msg.message_id,
             'batch_key': bulk_batch_key,
             'time': time.time(),
-            'is_bulk': True   # Mark as bulk so OTP delivery knows
+            'is_bulk': True
         }
 
     context.user_data['state'] = None
