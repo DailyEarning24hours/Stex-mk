@@ -652,7 +652,7 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
                                 f"🌍 Country - {get_flag(c_name)} {c_name}\n"
                                 f"✉️ Message - <pre>{html.escape(full_msg_text)}</pre>"
                             )
-                            kb = [[InlineKeyboardButton("🤖 Bot Link", url=f"https://t.me/{bot_username}")]]
+                            kb = [[InlineKeyboardButton("🤖 Bot Link", url=f"https://t.me/{bot_username}"), InlineKeyboardButton("👨‍💻 Developer", url="https://t.me/RTx2R")]]
                             try: 
                                 await context.bot.send_message(chat_id=RANGE_GROUP_ID, text=range_msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
                             except Exception: 
@@ -693,7 +693,7 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
                                 f"🌍 Country - {get_flag(c_name)} {c_name}\n"
                                 f"✉️ Message - <pre>{html.escape(full_msg_text)}</pre>"
                             )
-                            kb = [[InlineKeyboardButton("🤖 Bot Link", url=f"https://t.me/{bot_username}")]]
+                            kb = [[InlineKeyboardButton("🤖 Bot Link", url=f"https://t.me/{bot_username}"), InlineKeyboardButton("👨‍💻 Developer", url="https://t.me/RTx2R")]]
                             try: 
                                 await context.bot.send_message(chat_id=RANGE_GROUP_ID, text=range_msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
                             except Exception: 
@@ -1092,7 +1092,12 @@ async def show_bulk_qty_prompt(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, qty: int):
-    """Fetch bulk numbers and deliver."""
+    """
+    🔥 BULK BUY: Fetch numbers, show all in ONE copyable block,
+    then register all in WAITING_OTPS for 20 min OTP listening.
+    """
+    global WAITING_OTPS, BATCH_MSGS
+    user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     range_val = context.user_data.get('bulk_range', '')
     server_id = context.user_data.get('bulk_server', 1)
@@ -1117,7 +1122,7 @@ async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, q
                 payload = {"range": range_val, "is_national": False, "remove_plus": False}
                 status, resp = await stex_api_request('POST', API_STEX_GET_NUM, json_payload=payload)
                 if status == 200 and isinstance(resp, dict) and resp.get('data', {}).get('number'):
-                    fetched.append(resp['data']['number'])
+                    fetched.append(str(resp['data']['number']))
                 else:
                     failed += 1
             elif server_id == 2:
@@ -1145,6 +1150,8 @@ async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Server", callback_data="go_main")]]),
             parse_mode=ParseMode.HTML
         )
+        context.user_data['state'] = None
+        context.user_data['bulk_range'] = None
         return
 
     flag = get_flag(country_name)
@@ -1153,30 +1160,59 @@ async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, q
     except Exception:
         pass
 
-    # Summary
-    await context.bot.send_message(
+    # 🔥 ALL NUMBERS IN ONE SINGLE <code> BLOCK — 1 click to copy all
+    # Numbers on one line separated by space for easy copy
+    all_nums_line = " ".join(fetched)
+
+    # Split into chunks of 50 numbers per message to avoid Telegram limit
+    chunk_size = 50
+    num_chunks = [fetched[i:i+chunk_size] for i in range(0, len(fetched), chunk_size)]
+
+    # Summary message
+    summary_msg = await context.bot.send_message(
         chat_id=chat_id,
         text=(
             f"✅ <b>BULK BUY COMPLETE!</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🌍 <b>{flag} {country_name}</b>\n"
-            f"📦 Requested: {qty} | Received: {len(fetched)} | Failed: {failed}\n"
-            f"━━━━━━━━━━━━━━━━━━━━"
+            f"📦 Requested: <b>{qty}</b> | Received: <b>{len(fetched)}</b> | Failed: <b>{failed}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏳ <i>Waiting for OTPs... (20 min)</i>"
         ),
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Server", callback_data="go_main")]]),
         parse_mode=ParseMode.HTML
     )
 
-    # Send numbers in chunks of 20
-    chunks = [fetched[i:i+20] for i in range(0, len(fetched), 20)]
-    for idx, chunk in enumerate(chunks):
-        nums_text = "\n".join([f"<code>{n}</code>" for n in chunk])
+    # 🔥 Send numbers — each chunk as ONE copyable code block (1 click copy)
+    for idx, chunk in enumerate(num_chunks):
+        one_line = " ".join(chunk)
+        chunk_label = f"📋 <b>Numbers {idx*chunk_size+1}–{idx*chunk_size+len(chunk)}</b> (tap to copy all):\n"
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"📋 <b>Chunk {idx+1}/{len(chunks)}</b>\n━━━━━━━━━━━━━━━━━━━━\n{nums_text}",
+            text=f"{chunk_label}<code>{one_line}</code>",
             parse_mode=ParseMode.HTML
         )
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.15)
+
+    # 🔥 REGISTER ALL FETCHED NUMBERS IN WAITING_OTPS FOR OTP LISTENING (20 MIN)
+    bulk_batch_key = f"bulk_{chat_id}_{summary_msg.message_id}"
+    BATCH_MSGS[bulk_batch_key] = {
+        'numbers': fetched.copy(),
+        'country_name': country_name,
+        'flag': flag
+    }
+
+    for n in fetched:
+        hash_key = get_hash_key(n)
+        WAITING_OTPS[hash_key] = {
+            'full_num': n,
+            'user_id': user_id,
+            'chat_id': chat_id,
+            'msg_id': summary_msg.message_id,
+            'batch_key': bulk_batch_key,
+            'time': time.time(),
+            'is_bulk': True   # Mark as bulk so OTP delivery knows
+        }
 
     context.user_data['state'] = None
     context.user_data['bulk_range'] = None
