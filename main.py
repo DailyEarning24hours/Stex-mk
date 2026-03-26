@@ -70,8 +70,8 @@ API_STEX_GET_NUM = "https://stexsms.com/mapi/v1/mdashboard/getnum/number"
 API_STEX_INBOX = "https://stexsms.com/mapi/v1/mdashboard/getnum/info"
 
 # 🚀 SERVER 2 CREDENTIALS — MNIT Network (Cloudflare Protected)
-MNIT_EMAIL = "rtxraja0011@gmail.com"
-MNIT_PASSWORD = "Raja1234@#"
+MNIT_EMAIL = "mujahidhasan619@gmail.com"
+MNIT_PASSWORD = "hasan2008#"
 MNIT_BASE_URL = "https://x.mnitnetwork.com/mapi/v1"
 API_MNIT_LOGIN = f"{MNIT_BASE_URL}/mauth/login"
 API_MNIT_CONSOLE = f"{MNIT_BASE_URL}/mdashboard/console/info"
