@@ -1,11 +1,12 @@
 """
 ==============================================================================
-PROJECT: ✨ PREMIUM OTP BOT (Ultimate Update - Version 23.0 ENTERPRISE) ✨
+PROJECT: ✨ PREMIUM OTP BOT (Ultimate Update - Version 24.0 ENTERPRISE) ✨
 CAPACITY: 10,000+ Users on Render Free Plan (O(1) Hash-Map Algorithm).
 EXTREME SPEED UPDATE: Polling interval reduced to 4 seconds.
 PARALLEL PROCESSING: Server 1 & Server 2 inboxes are now fetched SIMULTANEOUSLY!
 NEW FEATURE: "Get Number Again" button appears after both codes are received.
-FIXED: Dual Server System (Server 1: Stex, Server 2: MK Network) fully stable.
+FIXED: Dual Server System (Server 1: Stex, Server 2: MNIT Network) fully stable.
+CLOUDFLARE BYPASS: MNIT Network uses full browser headers + cookie jar for CF bypass.
 ERROR HANDLING: 100% hidden HTTP 401/500 errors. Premium fallback messages used.
 FORMATTING: Fully Expanded, No Shortcuts, Maximum Stability & Beauty.
 ==============================================================================
@@ -65,13 +66,31 @@ API_STEX_CONSOLE = "https://stexsms.com/mapi/v1/mdashboard/console/info"
 API_STEX_GET_NUM = "https://stexsms.com/mapi/v1/mdashboard/getnum/number"
 API_STEX_INBOX = "https://stexsms.com/mapi/v1/mdashboard/getnum/info"
 
-# 🚀 SERVER 2 CREDENTIALS
-MK_EMAIL = "mujahidhasan619@gmail.com"
-MK_PASSWORD = "hasan2008"
-API_MK_LOGIN = "http://mknetworkbd.com/process_login.php"
-API_MK_CONSOLE = "http://mknetworkbd.com/console.php?ajax=1"
-API_MK_GET_NUM = "http://mknetworkbd.com/API/api_handler.php"
-API_MK_INBOX = "http://mknetworkbd.com/API/api_handler.php?action=get_history&filter=all&page=1&limit=50&date={}"
+# 🚀 SERVER 2 CREDENTIALS — MNIT Network (Cloudflare Protected)
+MNIT_EMAIL = "rtxraja0011@gmail.com"
+MNIT_PASSWORD = "Raja1234@#"
+MNIT_BASE_URL = "https://x.mnitnetwork.com/mapi/v1"
+API_MNIT_LOGIN = f"{MNIT_BASE_URL}/mauth/login"
+API_MNIT_CONSOLE = f"{MNIT_BASE_URL}/mdashboard/console/info"
+API_MNIT_GET_NUM = f"{MNIT_BASE_URL}/mdashboard/getnum/number"
+API_MNIT_INBOX = f"{MNIT_BASE_URL}/mdashboard/getnum/info"
+
+# 🔥 CLOUDFLARE BYPASS HEADERS — matches the exact browser fingerprint that MNIT accepts
+MNIT_CF_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 14; SM-A135F Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.7632.159 Mobile Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "Origin": "https://x.mnitnetwork.com",
+    "sec-ch-ua": '"Not:A-Brand";v="99", "Android WebView";v="145", "Chromium";v="145"',
+    "sec-ch-ua-mobile": "?1",
+    "sec-ch-ua-platform": '"Android"',
+    "sec-fetch-site": "same-origin",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-dest": "empty",
+    "x-requested-with": "mark.via.gp",
+    "accept-encoding": "gzip, deflate, br",
+    "accept-language": "en-US,en-VI;q=0.9,en;q=0.8,bn-BD;q=0.7,bn;q=0.6",
+}
 
 API_2FA = "https://2fa.cn/codes/{}"
 
@@ -80,13 +99,15 @@ API_2FA = "https://2fa.cn/codes/{}"
 # ==============================================================================
 
 MAUTH_TOKEN = None
+MNIT_TOKEN = None
 GLOBAL_SESSION = None 
+MNIT_SESSION = None
 
 AUTH_LOCK_STEX = asyncio.Lock() 
 LAST_AUTH_TIME_STEX = 0
 
-AUTH_LOCK_MK = asyncio.Lock()
-LAST_AUTH_TIME_MK = 0
+AUTH_LOCK_MNIT = asyncio.Lock()
+LAST_AUTH_TIME_MNIT = 0
 
 SENT_RANGES = set()
 START_TIME = datetime.datetime.now()
@@ -152,6 +173,28 @@ async def get_session():
         connector = aiohttp.TCPConnector(limit=500, keepalive_timeout=120, ttl_dns_cache=600, enable_cleanup_closed=True)
         GLOBAL_SESSION = aiohttp.ClientSession(connector=connector, cookie_jar=aiohttp.CookieJar(unsafe=True))
     return GLOBAL_SESSION
+
+async def get_mnit_session():
+    """
+    🔥 DEDICATED SESSION FOR MNIT NETWORK WITH CLOUDFLARE BYPASS.
+    Uses a persistent CookieJar so the mauthtoken cookie set by CF is retained
+    across all subsequent requests — this is the key to bypassing CF bot detection.
+    """
+    global MNIT_SESSION
+    if MNIT_SESSION is None or MNIT_SESSION.closed:
+        connector = aiohttp.TCPConnector(
+            limit=200,
+            keepalive_timeout=120,
+            ttl_dns_cache=600,
+            enable_cleanup_closed=True,
+            ssl=True,
+        )
+        # 🔥 unsafe=True allows cookie jar to work across http/https and subdomains
+        MNIT_SESSION = aiohttp.ClientSession(
+            connector=connector,
+            cookie_jar=aiohttp.CookieJar(unsafe=True),
+        )
+    return MNIT_SESSION
 
 async def parse_response_safely(response):
     try: 
@@ -232,54 +275,85 @@ async def stex_api_request(method, url, json_payload=None):
             await asyncio.sleep(2)
     return 500, None 
 
-# ----- SERVER 2 AUTH -----
-async def authenticate_mk(force=False):
-    global LAST_AUTH_TIME_MK
-    async with AUTH_LOCK_MK:
-        if not force and time.time() - LAST_AUTH_TIME_MK < 300: return True
-        payload = aiohttp.FormData()
-        payload.add_field('userid', MK_EMAIL)
-        payload.add_field('password', MK_PASSWORD)
-        headers = {
-            "User-Agent": BASE_USER_AGENT, 
-            "Origin": "http://mknetworkbd.com", 
-            "Referer": "http://mknetworkbd.com/auth.php"
+# ----- SERVER 2 AUTH — MNIT NETWORK (CLOUDFLARE BYPASS) -----
+async def authenticate_mnit(force=False):
+    global MNIT_TOKEN, LAST_AUTH_TIME_MNIT
+    async with AUTH_LOCK_MNIT:
+        if not force and time.time() - LAST_AUTH_TIME_MNIT < 15 and MNIT_TOKEN:
+            return True
+        payload = {"email": MNIT_EMAIL, "password": MNIT_PASSWORD}
+        login_headers = {
+            **MNIT_CF_HEADERS,
+            "Referer": "https://x.mnitnetwork.com/mauth/login",
         }
         try:
-            session = await get_session()
-            async with session.post(API_MK_LOGIN, data=payload, headers=headers, timeout=15, ssl=False) as response:
-                content_type = response.headers.get('Content-Type', '')
-                if 'application/json' in content_type:
+            session = await get_mnit_session()
+            async with session.post(
+                API_MNIT_LOGIN,
+                json=payload,
+                headers=login_headers,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as response:
+                if response.status == 200:
                     data = await parse_response_safely(response)
-                    if data and data.get('status') == 'success':
-                        LAST_AUTH_TIME_MK = time.time()
+                    if data and str(data.get('meta', {}).get('code')) == '200':
+                        MNIT_TOKEN = data['data']['token']
+                        LAST_AUTH_TIME_MNIT = time.time()
+                        logger.info("✅ MNIT Network login successful.")
                         return True
+                logger.warning(f"⚠️ MNIT login failed — HTTP {response.status}")
                 return False
-        except Exception: 
+        except Exception as e:
+            logger.error(f"MNIT auth error: {e}")
             return False
 
-async def mk_api_request(method, url, form_data=None):
+def get_mnit_headers(referer: str = "https://x.mnitnetwork.com/mdashboard"):
+    """
+    🔥 FULL CLOUDFLARE-SAFE HEADERS — mauthtoken sent BOTH as header AND cookie.
+    This matches the exact pattern observed in the browser that successfully bypasses CF.
+    """
+    return {
+        **MNIT_CF_HEADERS,
+        "mauthtoken": str(MNIT_TOKEN),
+        "Referer": referer,
+        "Cookie": f"mauthtoken={MNIT_TOKEN}",
+    }
+
+async def mnit_api_request(method: str, url: str, json_payload=None, referer: str = "https://x.mnitnetwork.com/mdashboard"):
+    global MNIT_TOKEN
     for attempt in range(3):
         try:
-            session = await get_session()
-            headers = {"User-Agent": BASE_USER_AGENT, "X-Requested-With": "mark.via.gp"}
-            if method.upper() == 'GET': 
-                response = await session.get(url, headers=headers, timeout=15, ssl=False)
-            else: 
-                response = await session.post(url, data=form_data, headers=headers, timeout=15, ssl=False)
-            
+            if not MNIT_TOKEN:
+                if not await authenticate_mnit():
+                    await asyncio.sleep(2)
+                    continue
+            session = await get_mnit_session()
+            headers = get_mnit_headers(referer=referer)
+            if method.upper() == 'GET':
+                response = await session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20))
+            else:
+                response = await session.post(url, json=json_payload, headers=headers, timeout=aiohttp.ClientTimeout(total=20))
+
             status = response.status
-            content_type = response.headers.get('Content-Type', '')
-            
-            # 🔥 SUPPRESSING 401, 501, 500 ERRORS INTERNALLY
-            if status in [401, 403, 500, 501, 502, 503] or 'text/html' in content_type:
-                await authenticate_mk(force=True)
+            # 🔥 If CF challenges us or token expired — re-login
+            if status in [401, 403, 429, 500, 502, 503]:
+                MNIT_TOKEN = None
                 await asyncio.sleep(2)
+                await authenticate_mnit(force=True)
                 continue
-                
-            data = await parse_response_safely(response)
-            return 200, data
-        except Exception: 
+            if status == 200:
+                data = await parse_response_safely(response)
+                if isinstance(data, dict):
+                    meta_code = str(data.get('meta', {}).get('code', '200'))
+                    if meta_code in ['401', '403']:
+                        MNIT_TOKEN = None
+                        await authenticate_mnit(force=True)
+                        continue
+                return 200, data
+            else:
+                return status, None
+        except Exception as e:
+            logger.error(f"MNIT API request error (attempt {attempt+1}): {e}")
             await asyncio.sleep(2)
     return 500, None
 
@@ -612,9 +686,9 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
 
     # Fetch both consoles simultaneously for speed
     stex_task = stex_api_request('GET', API_STEX_CONSOLE)
-    mk_task = mk_api_request('GET', API_MK_CONSOLE)
+    mnit_task = mnit_api_request('GET', API_MNIT_CONSOLE, referer="https://x.mnitnetwork.com/mdashboard/console")
     
-    results = await asyncio.gather(stex_task, mk_task, return_exceptions=True)
+    results = await asyncio.gather(stex_task, mnit_task, return_exceptions=True)
     
     # 1. PROCESS SERVER 1 (STEX)
     if isinstance(results[0], tuple):
@@ -658,22 +732,22 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
                             except Exception: 
                                 pass
 
-    # 2. PROCESS SERVER 2 (MK NETWORK)
+    # 2. PROCESS SERVER 2 (MNIT NETWORK)
     if isinstance(results[1], tuple):
-        mk_status, mk_data = results[1]
-        if mk_status == 200 and isinstance(mk_data, dict):
-            feeds = mk_data.get('feed', [])
-            # 🔥 Check up to 20 logs — MK Network sends more data
-            for log in feeds[:20]:
+        mnit_status, mnit_data = results[1]
+        if mnit_status == 200 and isinstance(mnit_data, dict):
+            logs = mnit_data.get('data', {}).get('logs', [])
+            # 🔥 Check up to 20 logs — MNIT console sends rich log data
+            for log in logs[:20]:
                 if isinstance(log, dict):
                     r_val = log.get('range')
-                    raw_app = str(log.get('service_name', 'Unknown')).lower()
+                    raw_app = str(log.get('app_name', 'Unknown')).lower()
                     c_name = log.get('country', 'Unknown')
-                    msg_text = str(log.get('msg', ''))
+                    msg_text = str(log.get('sms', ''))
                     
                     if any(app in raw_app for app in allowed_apps) and r_val:
                         # 🔥 MULTI-RANGE FIX: unique sig per OTP
-                        raw_msg = log.get('full_sms', log.get('sms', log.get('text', log.get('msg', log.get('message', log.get('otp', 'No Message Provided'))))))
+                        raw_msg = log.get('sms', log.get('message', 'No Message Provided'))
                         full_msg_text = clean_message_text(raw_msg)
                         code_sig = extract_code(raw_msg)
                         range_sig = f"{r_val}_{code_sig}_{str(raw_msg)[:25]}"
@@ -682,7 +756,7 @@ async def auto_range_forwarder_job(context: ContextTypes.DEFAULT_TYPE):
                             SENT_RANGES.add(range_sig)
                             if len(SENT_RANGES) > 10000: SENT_RANGES.clear()
                             
-                            display_app = "PC Clone" if ('facebook' in raw_app and '******' in msg_text) else log.get('service_name', 'Unknown').title()
+                            display_app = "PC Clone" if ('facebook' in raw_app and '******' in msg_text) else log.get('app_name', 'Unknown').title()
                             
                             range_msg = (
                                 f"🔥 <b>New Range find</b>\n"
@@ -780,12 +854,12 @@ async def global_otp_checker_job(context: ContextTypes.DEFAULT_TYPE):
 
     # 🔥 PARALLEL FETCHING: FETCHING BOTH INBOXES AT THE EXACT SAME TIME
     stex_url = f"{API_STEX_INBOX}?date={date_str}&page=1&search=&status="
-    mk_url = API_MK_INBOX.format(date_str)
+    mnit_url = f"{API_MNIT_INBOX}?date={date_str}&page=1&search=&status="
     
     stex_task = stex_api_request('GET', stex_url)
-    mk_task = mk_api_request('GET', mk_url)
+    mnit_task = mnit_api_request('GET', mnit_url, referer="https://x.mnitnetwork.com/mdashboard/getnum")
     
-    results = await asyncio.gather(stex_task, mk_task, return_exceptions=True)
+    results = await asyncio.gather(stex_task, mnit_task, return_exceptions=True)
 
     # 1. PROCESS SERVER 1 (STEX) RESULTS - MULTIPLE OTP SUPPORT
     if isinstance(results[0], tuple):
@@ -806,26 +880,26 @@ async def global_otp_checker_job(context: ContextTypes.DEFAULT_TYPE):
                             rcv.add(msg_sig)
                             await process_found_otp(context, hash_key, item.get('number', ''), code_val, item.get('full_number', 'Service'), raw_msg)
 
-    # 2. PROCESS SERVER 2 (MK NETWORK) RESULTS - MULTIPLE OTP SUPPORT
+    # 2. PROCESS SERVER 2 (MNIT NETWORK) RESULTS - MULTIPLE OTP SUPPORT
     if isinstance(results[1], tuple):
-        mk_status, mk_res = results[1]
-        if mk_status == 200 and mk_res:
-            for item in mk_res.get('data', []):
+        mnit_status, mnit_res = results[1]
+        if mnit_status == 200 and mnit_res:
+            for item in mnit_res.get('data', {}).get('numbers', []):
                 if isinstance(item, dict) and item.get('status') == 'success':
-                    hash_key = get_hash_key(item.get('phone_number', ''))
+                    hash_key = get_hash_key(item.get('number', ''))
                     if hash_key in WAITING_OTPS:
-                        raw_msg = item.get('full_sms_list', 'No Message')
-                        code_val = item.get('otps', extract_code(raw_msg))
-                        if not code_val: 
-                            code_val = extract_code(raw_msg)
-                            
+                        # 🔥 MNIT field names: otp / message both carry the full SMS
+                        raw_msg = item.get('otp', item.get('message', 'No Message'))
+                        code_val = extract_code(raw_msg)
+                        svc_name = item.get('full_number', item.get('app_name', 'Service'))
+                        
                         # 🔥 UNIQUE SIGNATURE CHECK — SAME OTP SPAM PREVENT
                         msg_sig = f"{code_val}_{raw_msg[:20]}"
                         rcv = WAITING_OTPS[hash_key].setdefault('received_codes', set())
                         
                         if msg_sig not in rcv:
                             rcv.add(msg_sig)
-                            await process_found_otp(context, hash_key, item.get('phone_number', ''), code_val, item.get('operator', 'Service'), raw_msg)
+                            await process_found_otp(context, hash_key, item.get('number', ''), code_val, svc_name, raw_msg)
 
     # 🔥 NUMBER WAITING_OTPS থেকে REMOVE করা হচ্ছে না — 20 মিনিট ধরে সব OTP ধরবে!
 
@@ -865,15 +939,17 @@ async def process_number_generation(update: Update, context: ContextTypes.DEFAUL
                 fetched_numbers.append(resp['data']['number'])
                 country_name = resp['data'].get('country', country_name)
                 
-        elif server_id == 2: 
-            form_data = aiohttp.FormData()
-            form_data.add_field('action', 'get_number')
-            form_data.add_field('range', range_val)
-            status, resp = await mk_api_request('POST', API_MK_GET_NUM, form_data=form_data)
-            if status == 200 and isinstance(resp, dict) and resp.get('status') == 'success' and resp.get('number'):
-                clean_num = str(resp['number']).replace('+', '')
-                fetched_numbers.append(clean_num)
-                country_name = context.user_data.get('country_name', 'Global')
+        elif server_id == 2:
+            # 🔥 MNIT Network — JSON payload, CF-safe headers
+            mnit_payload = {"range": range_val, "is_national": False, "remove_plus": True}
+            status, resp = await mnit_api_request(
+                'POST', API_MNIT_GET_NUM,
+                json_payload=mnit_payload,
+                referer=f"https://x.mnitnetwork.com/mdashboard/getnum?range={range_val}"
+            )
+            if status == 200 and isinstance(resp, dict) and 'data' in resp and resp['data'].get('number'):
+                fetched_numbers.append(resp['data']['number'])
+                country_name = resp['data'].get('country', country_name)
             
     if fetched_numbers:
         flag = get_flag(country_name)
@@ -1032,11 +1108,11 @@ async def show_bulk_countries(update: Update, context: ContextTypes.DEFAULT_TYPE
                     if c and r and c not in countries:
                         countries[c] = r
     elif server_id == 2:
-        await authenticate_mk(force=True)
-        status, data = await mk_api_request('GET', API_MK_CONSOLE)
+        await authenticate_mnit(force=True)
+        status, data = await mnit_api_request('GET', API_MNIT_CONSOLE, referer="https://x.mnitnetwork.com/mdashboard/console")
         if status == 200 and isinstance(data, dict):
-            for log in data.get('feed', []):
-                if isinstance(log, dict) and service in str(log.get('service_name', '')).lower():
+            for log in data.get('data', {}).get('logs', []):
+                if isinstance(log, dict) and service in str(log.get('app_name', '')).lower():
                     c, r = log.get('country'), log.get('range')
                     if c and r and c not in countries:
                         countries[c] = r
@@ -1127,12 +1203,14 @@ async def process_bulk_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, q
                 else:
                     failed += 1
             elif server_id == 2:
-                form_data = aiohttp.FormData()
-                form_data.add_field('action', 'get_number')
-                form_data.add_field('range', range_val)
-                status, resp = await mk_api_request('POST', API_MK_GET_NUM, form_data=form_data)
-                if status == 200 and isinstance(resp, dict) and resp.get('status') == 'success' and resp.get('number'):
-                    fetched.append(str(resp['number']).replace('+', ''))
+                mnit_payload = {"range": range_val, "is_national": False, "remove_plus": True}
+                status, resp = await mnit_api_request(
+                    'POST', API_MNIT_GET_NUM,
+                    json_payload=mnit_payload,
+                    referer=f"https://x.mnitnetwork.com/mdashboard/getnum?range={range_val}"
+                )
+                if status == 200 and isinstance(resp, dict) and resp.get('data', {}).get('number'):
+                    fetched.append(str(resp['data']['number']))
                 else:
                     failed += 1
         except Exception:
@@ -1290,11 +1368,11 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
                         countries[c] = r
                         
     elif server_id == 2:
-        await authenticate_mk(force=True)
-        status, data = await mk_api_request('GET', API_MK_CONSOLE)
+        await authenticate_mnit(force=True)
+        status, data = await mnit_api_request('GET', API_MNIT_CONSOLE, referer="https://x.mnitnetwork.com/mdashboard/console")
         if status == 200 and isinstance(data, dict):
-            for log in data.get('feed', []):
-                if isinstance(log, dict) and category in str(log.get('service_name', '')).lower():
+            for log in data.get('data', {}).get('logs', []):
+                if isinstance(log, dict) and category in str(log.get('app_name', '')).lower():
                     c, r = log.get('country'), log.get('range')
                     if c and r and c not in countries: 
                         countries[c] = r
@@ -1788,6 +1866,8 @@ async def start_dummy_server():
 
 async def post_init(app: Application):
     asyncio.create_task(start_dummy_server())
+    # 🔥 Pre-login both servers on startup
+    asyncio.create_task(authenticate_mnit(force=True))
 
 if __name__ == "__main__":
     init_db()
@@ -1817,5 +1897,5 @@ if __name__ == "__main__":
     # 🔥 RANGE FORWARDER — 20s interval for fast Server 2 range detection
     app.job_queue.run_repeating(auto_range_forwarder_job, interval=20, first=10)
     
-    logger.info("✨ VERSION 23.0 ENTERPRISE (PARALLEL PROCESSING) STARTED SUCCESSFULLY... ✨")
+    logger.info("✨ VERSION 24.0 ENTERPRISE (MNIT CF-BYPASS + PARALLEL PROCESSING) STARTED SUCCESSFULLY... ✨")
     app.run_polling(drop_pending_updates=True)
