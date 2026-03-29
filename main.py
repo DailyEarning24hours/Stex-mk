@@ -1,12 +1,14 @@
 """
 ==============================================================================
-PROJECT: ✨ PREMIUM OTP BOT (Ultimate Update - Version 100.0 ENTERPRISE FINAL) ✨
+PROJECT: ✨ PREMIUM OTP BOT (Ultimate Update - Version 110.0 ENTERPRISE FINAL) ✨
 CAPACITY: 30,000+ Users on Render Free Plan (Thread-Pool & O(1) RAM Hash-Map).
 UPDATES: DUAL SERVER ARCHITECTURE (Server 1: STEX, Server 2: ACCHUB).
 CLOUDFLARE BYPASS: curl_cffi impersonates Chrome TLS fingerprint for Server 2.
 NEW UI & EXTREME SCALABILITY FEATURES:
 - Zero Loading Architecture: "Connecting..." & "Calculating..." show up but finish in a blink (0.01s)!
 - Direct Category Menu: Facebook, WhatsApp, Instagram, Telegram, Bulk Number Buy.
+- Multi-Number Fetching: Fetches 3 numbers by default per request (Admin can change 1 to 10).
+- Admin Suffix Control: Add suffixes like " XR" to S1/S2 ranges directly from Inline Panel.
 - Bulk Number System: TXT file output, Admin Permissions, Limit Controller.
 - Admin Panel: 100% Inline Control. Bot ON/OFF Toggle, Dynamic Settings.
 - Hardcoded Auto-Ping: Pings stex-mk-hila automatically every 120 seconds.
@@ -60,7 +62,7 @@ TOKEN = "8635914509:AAHvuII5fmdBxjoXKovvxy1sPVWMHqkTpzk"
 
 ADMIN_IDS = [6031032502, 6941366213] 
 
-CHANNELS = ["@Brother_United_Team", "@Brother_RangeGroup", "@brother_otp_rcv", "@backupchannel4262"]
+CHANNELS = ["@Brother_United_Team", "@brother_range_grupe", "@brother_otp_rcv", "@backupchannel4262"]
 
 RANGE_GROUP_ID = -1003301217502
 OTP_GROUP_ID = -1003860012419
@@ -150,6 +152,7 @@ SETTINGS_CACHE = {
     "ref_reward": 0.05,
     "min_withdraw": 50.0,
     "bot_status": 1,
+    "user_fetch_limit": 3,
     "bulk_limit": 2,
     "s1_suffix": "",
     "s2_suffix": " XRT"
@@ -267,7 +270,7 @@ def _find_waiter(num_raw: str):
 # 🗄️ DATABASE & REWARD SYSTEM MANAGEMENT
 # ==============================================================================
 
-DB_FILE = "bot_v100_enterprise.db"
+DB_FILE = "bot_v110_enterprise.db"
 
 class DatabasePool:
     def __init__(self, db_file, pool_size=50):
@@ -297,7 +300,7 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY, otp_reward REAL DEFAULT 0.10, ref_reward REAL DEFAULT 0.05, 
             min_withdraw REAL DEFAULT 50.0, s1_suffix TEXT DEFAULT '', s2_suffix TEXT DEFAULT ' XRT',
-            bot_status INTEGER DEFAULT 1, bulk_limit INTEGER DEFAULT 2
+            bot_status INTEGER DEFAULT 1, user_fetch_limit INTEGER DEFAULT 3, bulk_limit INTEGER DEFAULT 2
         )''')
 
         # Add columns safely if they don't exist
@@ -305,6 +308,7 @@ def init_db():
             ("s1_suffix", "TEXT", "''"), 
             ("s2_suffix", "TEXT", "' XRT'"), 
             ("bot_status", "INTEGER", "1"), 
+            ("user_fetch_limit", "INTEGER", "3"),
             ("bulk_limit", "INTEGER", "2")
         ]:
             try: c.execute(f"ALTER TABLE settings ADD COLUMN {col} {col_type} DEFAULT {default}")
@@ -319,10 +323,10 @@ def init_db():
             user_id INTEGER PRIMARY KEY
         )''')
         
-        c.execute("SELECT otp_reward, ref_reward, min_withdraw, s1_suffix, s2_suffix, bot_status, bulk_limit FROM settings WHERE id=1")
+        c.execute("SELECT otp_reward, ref_reward, min_withdraw, s1_suffix, s2_suffix, bot_status, user_fetch_limit, bulk_limit FROM settings WHERE id=1")
         settings_row = c.fetchone()
         if not settings_row:
-            c.execute("INSERT INTO settings (id, otp_reward, ref_reward, min_withdraw, s1_suffix, s2_suffix, bot_status, bulk_limit) VALUES (1, 0.10, 0.05, 50.0, '', ' XRT', 1, 2)")
+            c.execute("INSERT INTO settings (id, otp_reward, ref_reward, min_withdraw, s1_suffix, s2_suffix, bot_status, user_fetch_limit, bulk_limit) VALUES (1, 0.10, 0.05, 50.0, '', ' XRT', 1, 3, 2)")
         else:
             SETTINGS_CACHE["otp_reward"] = settings_row[0]
             SETTINGS_CACHE["ref_reward"] = settings_row[1]
@@ -330,7 +334,8 @@ def init_db():
             SETTINGS_CACHE["s1_suffix"] = settings_row[3] if len(settings_row)>3 and settings_row[3] is not None else ""
             SETTINGS_CACHE["s2_suffix"] = settings_row[4] if len(settings_row)>4 and settings_row[4] is not None else " XRT"
             SETTINGS_CACHE["bot_status"] = settings_row[5] if len(settings_row)>5 and settings_row[5] is not None else 1
-            SETTINGS_CACHE["bulk_limit"] = settings_row[6] if len(settings_row)>6 and settings_row[6] is not None else 2
+            SETTINGS_CACHE["user_fetch_limit"] = settings_row[6] if len(settings_row)>6 and settings_row[6] is not None else 3
+            SETTINGS_CACHE["bulk_limit"] = settings_row[7] if len(settings_row)>7 and settings_row[7] is not None else 2
             
         conn.commit()
         
@@ -421,6 +426,9 @@ def sync_update_setting(key, value):
         elif key == "bot_status":
             c.execute("UPDATE settings SET bot_status=? WHERE id=1", (value,))
             SETTINGS_CACHE["bot_status"] = value
+        elif key == "user_fetch_limit":
+            c.execute("UPDATE settings SET user_fetch_limit=? WHERE id=1", (value,))
+            SETTINGS_CACHE["user_fetch_limit"] = value
         elif key == "bulk_limit":
             c.execute("UPDATE settings SET bulk_limit=? WHERE id=1", (value,))
             SETTINGS_CACHE["bulk_limit"] = value
@@ -919,6 +927,12 @@ async def global_otp_checker_job(context: ContextTypes.DEFAULT_TYPE):
 # 🎯 HIGH-SPEED NUMBER GENERATION 
 # ==============================================================================
 
+async def _fetch_number_s1(payload):
+    return await s1_api_request('POST', f"{S1_BASE_URL}/mdashboard/getnum/number", json_payload=payload)
+
+async def _fetch_number_s2(payload):
+    return await s2_api_request('POST', f"{S2_BASE_URL}/api/freelancer/get-page/get-number", json_payload=payload)
+
 async def process_number_generation(update: Update, context: ContextTypes.DEFAULT_TYPE, range_val, server_id, is_callback=True):
     global WAITING_OTPS, BATCH_MSGS, NUM_TO_HASH
     
@@ -941,7 +955,10 @@ async def process_number_generation(update: Update, context: ContextTypes.DEFAUL
     api_svc = 'facebook' if 'facebook' in raw_svc else 'whatsapp' if 'whatsapp' in raw_svc else 'instagram' if 'instagram' in raw_svc else 'telegram' if 'telegram' in raw_svc else 'facebook'
 
     is_bulk = context.user_data.get('is_bulk', False)
-    fetch_count = SETTINGS_CACHE.get("bulk_limit", 2) if is_bulk else 1
+    
+    # 🎯 APPLY ADMIN CONTROLLED FETCH LIMIT
+    fetch_count = SETTINGS_CACHE.get("bulk_limit", 2) if is_bulk else SETTINGS_CACHE.get("user_fetch_limit", 3)
+    fetch_count = min(max(fetch_count, 1), 10) # Ensures max is 10 and min is 1
 
     # 🔥 STAGGERED LOOP FOR GENERATION (Safe from CF 429)
     for _ in range(fetch_count):
@@ -1293,6 +1310,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_data['state'] = None
             return
 
+        elif state == 'ADMIN_SET_FETCH_LIMIT':
+            try:
+                limit = int(text)
+                if limit < 1: limit = 1
+                if limit > 10: limit = 10
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(DB_EXECUTOR, sync_update_setting, "user_fetch_limit", limit)
+                await update.message.reply_text(f"✅ <b>Normal Fetch Limit updated to:</b> {limit} numbers", parse_mode=ParseMode.HTML)
+            except: await update.message.reply_text("⚠️ Invalid format. Send a number between 1 and 10.")
+            user_data['state'] = None
+            return
+
         elif state == 'ADMIN_SET_BULK':
             try:
                 limit = int(text)
@@ -1300,6 +1329,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await loop.run_in_executor(DB_EXECUTOR, sync_update_setting, "bulk_limit", limit)
                 await update.message.reply_text(f"✅ <b>Bulk Number Limit updated to:</b> {limit}", parse_mode=ParseMode.HTML)
             except: await update.message.reply_text("⚠️ Invalid format. Send a number.")
+            user_data['state'] = None
+            return
+
+        elif state == 'ADMIN_SET_S1_SUFFIX':
+            val = text if text != "-" else ""
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(DB_EXECUTOR, sync_update_setting, "s1_suffix", val)
+            await update.message.reply_text(f"✅ <b>S1 Suffix updated to:</b> '{val}'", parse_mode=ParseMode.HTML)
+            user_data['state'] = None
+            return
+            
+        elif state == 'ADMIN_SET_S2_SUFFIX':
+            val = text if text != "-" else ""
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(DB_EXECUTOR, sync_update_setting, "s2_suffix", val)
+            await update.message.reply_text(f"✅ <b>S2 Suffix updated to:</b> '{val}'", parse_mode=ParseMode.HTML)
             user_data['state'] = None
             return
 
@@ -1378,7 +1423,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data['state'] = None
         
     elif "See Activity" in text:
-        kb = [[InlineKeyboardButton("🔥 Range Channel", url="https://t.me/brother_range_grupe")], [InlineKeyboardButton("💬 OTP Channel", url="https://t.me/brother_otp_rcv")]]
+        kb = [[InlineKeyboardButton("🔥 Range Channel", url="https://t.me/Brother_RangeGroup")], [InlineKeyboardButton("💬 OTP Channel", url="https://t.me/brother_otp_rcv")]]
         await update.message.reply_text("📊 <b>BOT ACTIVITY LINKS</b>\n━━━━━━━━━━━━━━━━━━━━\n<i>Join to see live Bot activity:</i>", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         
     # --- WITHDRAWAL STATES ---
@@ -1423,11 +1468,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: pass
             
         user_data['state'] = None
-        
-    else:
-        if user_id not in ADMIN_IDS:
-            if not is_main_menu_action:
-                await show_main_menu(update, context)
 
 # ==============================================================================
 # 🎮 BUTTON HANDLER
@@ -1543,9 +1583,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await loop.run_in_executor(DB_EXECUTOR, sync_update_setting, "bot_status", new_st)
             st_text = "ON 🟢" if new_st == 1 else "OFF 🔴 (Maintenance)"
             await query.answer(f"Bot Status changed to {st_text}", show_alert=True)
+        elif action == "fetchlim":
+            context.user_data['state'] = 'ADMIN_SET_FETCH_LIMIT'
+            await query.message.reply_text("🔢 <b>Send normal fetch limit (1 to 10):</b>\nEx: <code>3</code>", parse_mode=ParseMode.HTML)
         elif action == "setbulk":
             context.user_data['state'] = 'ADMIN_SET_BULK'
-            await query.message.reply_text("🔢 <b>Send how many numbers per Bulk request:</b>\nEx: <code>5</code>", parse_mode=ParseMode.HTML)
+            await query.message.reply_text("📦 <b>Send bulk fetch limit:</b>\nEx: <code>5</code>", parse_mode=ParseMode.HTML)
+        elif action == "s1suf":
+            context.user_data['state'] = 'ADMIN_SET_S1_SUFFIX'
+            await query.message.reply_text("✏️ <b>Send Suffix for Server 1:</b>\n(Send `-` to clear)", parse_mode=ParseMode.HTML)
+        elif action == "s2suf":
+            context.user_data['state'] = 'ADMIN_SET_S2_SUFFIX'
+            await query.message.reply_text("✏️ <b>Send Suffix for Server 2:</b>\nEx: <code> XR</code>", parse_mode=ParseMode.HTML)
+            
         await query.answer()
 
     # --- WITHDRAW FLOW ---
@@ -1603,11 +1653,12 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     kb = [
         [InlineKeyboardButton("⚙️ Toggle Bot (ON/OFF)", callback_data="adm_toggle")],
-        [InlineKeyboardButton("🔢 Set Bulk Limit", callback_data="adm_setbulk"), InlineKeyboardButton("👥 Total Users", callback_data="adm_users")],
+        [InlineKeyboardButton("🔢 Set Normal Limit", callback_data="adm_fetchlim"), InlineKeyboardButton("📦 Set Bulk Limit", callback_data="adm_setbulk")],
+        [InlineKeyboardButton("✏️ Set Suffix S1", callback_data="adm_s1suf"), InlineKeyboardButton("✏️ Set Suffix S2", callback_data="adm_s2suf")],
+        [InlineKeyboardButton("👥 Total Users", callback_data="adm_users"), InlineKeyboardButton("🏆 Top Refs", callback_data="adm_topref")],
         [InlineKeyboardButton("📢 Broadcast", callback_data="adm_broad"), InlineKeyboardButton("🚫 Ban / Unban", callback_data="adm_ban")],
         [InlineKeyboardButton("💰 Set Rewards", callback_data="adm_rew"), InlineKeyboardButton("💳 Set Min WD", callback_data="adm_mwd")],
-        [InlineKeyboardButton("💸 Add Balance", callback_data="adm_addbal"), InlineKeyboardButton("🏆 Top Refs", callback_data="adm_topref")],
-        [InlineKeyboardButton("❌ Close Panel", callback_data="adm_close")]
+        [InlineKeyboardButton("💸 Add Balance", callback_data="adm_addbal"), InlineKeyboardButton("❌ Close Panel", callback_data="adm_close")]
     ]
     await update.message.reply_text("🔐 <b>ADVANCED ADMIN PANEL</b> 🔐\n━━━━━━━━━━━━━━━━━━━━\n<i>Use the inline keyboard to manage the bot:</i>", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
 
@@ -1616,10 +1667,10 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================================================================
 
 async def web_server_handler(request):
-    return web.Response(text="✅ Premium OTP Bot V100 Enterprise Edition — Running perfectly!")
+    return web.Response(text="✅ Premium OTP Bot V110 Enterprise Edition — Running perfectly!")
 
 async def self_ping_job(context: ContextTypes.DEFAULT_TYPE):
-    # HARCODED PING as requested
+    # HARCODED PING EVERY 2 MINUTES
     try:
         session = await get_session()
         async with session.get("https://stex-mk-hila.onrender.com", timeout=aiohttp.ClientTimeout(total=10), ssl=False) as resp:
@@ -1675,5 +1726,5 @@ if __name__ == "__main__":
     app.job_queue.run_repeating(auto_relogin_job,         interval=300, first=300)
     app.job_queue.run_repeating(self_ping_job,            interval=120,  first=30)
     
-    logger.info("✨ VERSION 100.0 ENTERPRISE FINAL STARTED SUCCESSFULLY ✨")
+    logger.info("✨ VERSION 110.0 ENTERPRISE FINAL STARTED SUCCESSFULLY ✨")
     app.run_polling(drop_pending_updates=True)
