@@ -699,7 +699,7 @@ async def update_dynamic_batch_message(context, chat_id, msg_id, batch_key):
             f"⏳ <i>Waiting for SMS...</i>"
         )
         kb = [
-            [InlineKeyboardButton("💬 OTP GROUP", url="https://t.me/RTxOtpX")],
+            [InlineKeyboardButton("💬 OTP GROUP", url="https://t.me/brother_otp_rcv")],
             [InlineKeyboardButton("🔄 Change Number", callback_data="change_num"), InlineKeyboardButton("🔙 Back to Category", callback_data="go_cat")]
         ]
         
@@ -1026,7 +1026,7 @@ async def process_number_generation(update: Update, context: ContextTypes.DEFAUL
         )
         
         kb = [
-            [InlineKeyboardButton("💬 OTP GROUP", url="https://t.me/RTxOtpX")],
+            [InlineKeyboardButton("💬 OTP GROUP", url="https://t.me/brother_otp_rcv")],
             [InlineKeyboardButton("🔄 Change Number", callback_data="change_num"), InlineKeyboardButton("🔙 Back to Category", callback_data="go_cat")]
         ]
         
