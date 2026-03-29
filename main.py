@@ -62,7 +62,7 @@ TOKEN = "8635914509:AAHvuII5fmdBxjoXKovvxy1sPVWMHqkTpzk"
 
 ADMIN_IDS = [6031032502, 6941366213] 
 
-CHANNELS = ["@Brother_United_Team", "@brother_range_grupe", "@brother_otp_rcv", "@backupchannel4262"]
+CHANNELS = ["@Brother_United_Team", "@Brother_RangeGroup", "@brother_otp_rcv", "@backupchannel4262"]
 
 RANGE_GROUP_ID = -1003301217502
 OTP_GROUP_ID = -1003860012419
